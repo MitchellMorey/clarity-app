@@ -1,7 +1,6 @@
 import type { DocType } from "@/lib/types";
 
 const styles: Record<DocType, string> = {
-  pdf: "bg-error-soft text-error",
   docx: "bg-[#eff6ff] text-[#1d4ed8]",
   pptx: "bg-[#fff7ed] text-[#c2410c]",
 };

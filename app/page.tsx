@@ -31,14 +31,14 @@ export default function LandingPage() {
           Find and fix accessibility issues in your documents.
         </h1>
         <p className="m-0 max-w-[460px] text-[17px] text-muted">
-          Upload a Word doc, PowerPoint, or PDF. Clarity reviews the formatting for
-          color contrast, font size, alt text, and heading structure — so your
+          Upload a Word document or PowerPoint deck. Clarity reviews the formatting
+          for color contrast, font size, alt text, and heading structure — so your
           content works for everyone.
         </p>
         <div className="mt-2 grid gap-3.5">
           <FeatureRow
             letter="A"
-            title="Works with DOCX, PPTX, and PDF"
+            title="Works with DOCX and PPTX"
             blurb="Drag and drop a file and get a report in seconds."
           />
           <FeatureRow

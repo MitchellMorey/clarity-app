@@ -1,20 +1,26 @@
 # Clarity — Document Accessibility Review
 
 A Next.js 14 (App Router) web app for reviewing document accessibility. Users
-upload a Word doc, PowerPoint, or PDF and get a report covering color contrast,
-font size, alt text, and heading structure. After fixing the issues they can
+upload a Word doc or PowerPoint and get a report covering color contrast, font
+size, alt text, and heading structure. After fixing the issues they can
 re-upload a revised version to see which have been resolved.
 
-This build uses mocked analysis (no real document parsing yet) and placeholder
-authentication (any email/password works). State is persisted in the browser
-via `localStorage`.
+**DOCX reviews are real.** Uploads are POSTed to `/api/review`, which unzips
+the Word document, walks its paragraphs and runs, and returns the actual
+accessibility issues found. **PPTX reviews are currently a placeholder** — the
+report page shows a "Preview analysis" banner and returns a sample issue set.
+Real PowerPoint parsing is planned.
+
+Authentication is a placeholder (any email/password works). App state persists
+in the browser via `localStorage`.
 
 ## Stack
 
 - Next.js 14 (App Router) with TypeScript
 - Tailwind CSS for styling
-- React Context + `localStorage` for mock persistence
-- No backend — deploys cleanly to Vercel as a static-rendered Next.js app
+- React Context + `localStorage` for document persistence
+- `jszip` + `fast-xml-parser` for real DOCX parsing inside a Next.js API route
+- No external backend — deploys cleanly to Vercel
 
 ## Running locally
 
@@ -40,18 +46,20 @@ npm start
 ```
 clarity-app/
 ├── app/
-│   ├── layout.tsx              Root layout + providers
-│   ├── globals.css             Tailwind + component classes
-│   ├── page.tsx                Landing / login
-│   ├── dashboard/page.tsx      Dashboard with reviews
-│   ├── upload/page.tsx         Upload + analysis flow
-│   └── reports/[id]/page.tsx   Report detail + re-upload
-├── components/                 Shared React components
+│   ├── layout.tsx                Root layout + providers
+│   ├── globals.css               Tailwind + component classes
+│   ├── page.tsx                  Landing / login
+│   ├── dashboard/page.tsx        Dashboard with reviews
+│   ├── upload/page.tsx           Upload + analysis flow
+│   ├── reports/[id]/page.tsx     Report detail + re-upload
+│   └── api/review/route.ts       POST endpoint — real DOCX analyzer
+├── components/                   Shared React components
 ├── lib/
-│   ├── types.ts                Shared TypeScript types
-│   ├── mock-data.ts            Seed documents + issue generators
-│   └── store.tsx               App-wide state (Context + localStorage)
-└── ...                         Config files
+│   ├── types.ts                  Shared TypeScript types
+│   ├── mock-data.ts              PPTX placeholder issues + helpers
+│   ├── docx-analyzer.ts          WCAG contrast, font, alt, heading checks
+│   └── store.tsx                 App-wide state (Context + localStorage)
+└── ...                           Config files
 ```
 
 ## Deploy to GitHub and Vercel
@@ -104,12 +112,24 @@ vercel          # preview deploy
 vercel --prod   # production deploy
 ```
 
-## Mock data
+## How reviews work
 
-New accounts start with an empty dashboard and a welcome state. Uploaded files
-add a new document with generated mock issues (`lib/mock-data.ts`); re-uploading
-a revised version marks ~70% of open issues as resolved (prioritizing critical
-ones) and bumps the score.
+New accounts start with an empty dashboard and a welcome state.
+
+**DOCX uploads** POST the file to `/api/review`, which runs `lib/docx-analyzer.ts`:
+it unzips the DOCX, parses `word/document.xml` and `word/styles.xml`, walks
+paragraphs and runs, and flags real issues — text whose WCAG contrast ratio is
+below 4.5:1, font sizes under 12pt, images with missing or filename-style alt
+text, and heading outlines that skip levels. The score is computed from the
+issues found (start at 100, subtract 15 per critical, 5 per warning, 2 per info).
+
+**PPTX uploads** currently return a placeholder issue set from
+`lib/mock-data.ts`, and the report page shows a "Preview analysis" banner so
+users know the PPTX review isn't real yet.
+
+**Re-review** still uses a heuristic: it resolves ~70% of the previous version's
+open issues, prioritizing critical ones. Upgrading re-review to re-analyze the
+uploaded file is a follow-up.
 
 State is persisted in `localStorage` under two keys: `clarity_session_v1` holds
 the logged-in email, and `clarity_account_v1:<email>` holds that account's
@@ -120,8 +140,10 @@ from your browser's dev tools to reset the app.
 
 Natural follow-ups when you're ready to harden this into a real product:
 
-- Wire up real document parsing in API routes (`pdfjs-dist`, `mammoth`,
-  `jszip`/`xml2js` for PPTX).
+- Build real PPTX parsing (same jszip pattern as DOCX, walking
+  `ppt/slides/slideN.xml` and checking text-run formatting + `<p:pic>` alt text).
+- Upgrade re-review to re-analyze the uploaded revised file instead of using the
+  heuristic 70%-resolved shortcut.
 - Replace placeholder auth with NextAuth (Credentials, GitHub, or magic links).
 - Move persistence from `localStorage` to a real database (Postgres via Neon,
   Planetscale, or Supabase).

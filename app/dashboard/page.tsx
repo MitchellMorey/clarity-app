@@ -70,7 +70,7 @@ export default function DashboardPage() {
               <StatCard
                 label="Documents reviewed"
                 value={stats.reviewed}
-                trend="Across DOCX, PPTX, PDF"
+                trend="Across DOCX and PPTX"
               />
               <StatCard
                 label="Average score"
@@ -95,7 +95,7 @@ export default function DashboardPage() {
                   Ready to review another document?
                 </strong>
                 <span className="text-[14px] text-muted">
-                  DOCX, PPTX, and PDF files up to 50 MB are supported.
+                  DOCX and PPTX files up to 50 MB are supported.
                 </span>
               </div>
               <Link href="/upload" className="btn btn-primary">
@@ -172,7 +172,7 @@ function EmptyState() {
         No reviews yet
       </h2>
       <p className="mx-auto mt-2 max-w-md text-[15px] text-muted">
-        Upload a Word doc, PowerPoint, or PDF and Clarity will review it for
+        Upload a Word document or PowerPoint deck and Clarity will review it for
         accessibility issues — color contrast, font size, alt text, and heading
         structure.
       </p>
@@ -182,7 +182,7 @@ function EmptyState() {
         </Link>
       </div>
       <div className="mt-4 text-[13px] text-subtle">
-        DOCX, PPTX, and PDF are supported.
+        DOCX and PPTX are supported.
       </div>
     </div>
   );

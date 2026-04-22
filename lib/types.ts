@@ -1,4 +1,4 @@
-export type DocType = "docx" | "pptx" | "pdf";
+export type DocType = "docx" | "pptx";
 
 export type IssueCategory = "contrast" | "font" | "alt" | "heading";
 export type IssueSeverity = "critical" | "warning" | "info";

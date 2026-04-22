@@ -10,7 +10,7 @@ interface DropzoneProps {
 
 export function Dropzone({
   onFile,
-  accept = ".docx,.pptx,.pdf,.ppt",
+  accept = ".docx,.pptx,.ppt",
   suggestedFile,
 }: DropzoneProps) {
   const [dragging, setDragging] = useState(false);
@@ -49,7 +49,7 @@ export function Dropzone({
         Drop your file here, or click to browse
       </h3>
       <p className="mb-4 mt-1 text-muted">
-        Supported formats: DOCX, PPTX, PDF
+        Supported formats: DOCX, PPTX
       </p>
       <button
         type="button"

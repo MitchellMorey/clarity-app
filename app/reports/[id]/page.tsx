@@ -152,6 +152,22 @@ export default function ReportPage({ params }: { params: { id: string } }) {
           </div>
         ) : null}
 
+        {doc.type === "pptx" ? (
+          <div className="mb-5 flex items-start gap-3 rounded-card border border-amber-200 bg-warn-soft px-5 py-3.5">
+            <div className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-full bg-warn text-[14px] text-white">
+              !
+            </div>
+            <div>
+              <strong className="text-warn">Preview analysis</strong>{" "}
+              <span className="text-text">
+                The issues below are a sample set to illustrate how PPTX reports
+                will look. Real slide-by-slide analysis for PowerPoint files is
+                still in development. DOCX reviews are real.
+              </span>
+            </div>
+          </div>
+        ) : null}
+
         <section className="mb-6 rounded-lg2 border border-border bg-surface px-7 py-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3.5">

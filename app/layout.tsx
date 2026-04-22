@@ -6,7 +6,7 @@ import { ToastHost } from "@/components/Toast";
 export const metadata: Metadata = {
   title: "Clarity — Document Accessibility Review",
   description:
-    "Upload Word, PowerPoint, and PDF documents and get an accessibility report in seconds.",
+    "Upload a Word document or PowerPoint deck and get an accessibility report in seconds.",
 };
 
 export default function RootLayout({

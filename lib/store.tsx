@@ -11,11 +11,7 @@ import {
 } from "react";
 import type { Document, DocType, Issue } from "./types";
 import { SEVERITY_ORDER } from "./types";
-import {
-  generateMockIssuesFor,
-  inferType,
-  todayString,
-} from "./mock-data";
+import { todayString } from "./mock-data";
 
 const SESSION_KEY = "clarity_session_v1";
 const ACCOUNT_KEY_PREFIX = "clarity_account_v1:";
@@ -52,8 +48,16 @@ interface AppContextValue {
   pushToast: (message: string) => void;
   dismissToast: (id: string) => void;
   clearJustReviewed: () => void;
-  addReviewedDocument: (filename: string) => string;
+  addReviewedDocument: (payload: AddReviewPayload) => string;
   addReReview: (docId: string) => void;
+}
+
+export interface AddReviewPayload {
+  name: string;
+  type: DocType;
+  size: string;
+  score: number;
+  issues: Issue[];
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -178,20 +182,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     );
   }, []);
 
-  const addReviewedDocument = useCallback((filename: string) => {
-    const type: DocType = inferType(filename);
+  const addReviewedDocument = useCallback((payload: AddReviewPayload) => {
     const newDoc: Document = {
       id: "doc_" + Math.random().toString(36).slice(2, 7),
-      name: filename,
-      type,
-      size: "2.1 MB",
+      name: payload.name,
+      type: payload.type,
+      size: payload.size,
       uploadedAt: todayString(),
       versions: [
         {
           version: 1,
           reviewedAt: todayString(),
-          score: 71,
-          issues: generateMockIssuesFor(type),
+          score: payload.score,
+          issues: payload.issues,
         },
       ],
     };
