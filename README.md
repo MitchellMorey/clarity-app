@@ -106,12 +106,14 @@ vercel --prod   # production deploy
 
 ## Mock data
 
-Three seed documents are shown on the dashboard on first load
-(`lib/mock-data.ts`). Uploaded files add a new document with generated mock
-issues; re-uploading a revised version marks ~70% of open issues as resolved
-(prioritizing critical ones) and bumps the score.
+New accounts start with an empty dashboard and a welcome state. Uploaded files
+add a new document with generated mock issues (`lib/mock-data.ts`); re-uploading
+a revised version marks ~70% of open issues as resolved (prioritizing critical
+ones) and bumps the score.
 
-State is persisted under the `clarity_state_v1` key in `localStorage`. Clear it
+State is persisted in `localStorage` under two keys: `clarity_session_v1` holds
+the logged-in email, and `clarity_account_v1:<email>` holds that account's
+documents. Each email gets its own isolated set of documents. Clear these keys
 from your browser's dev tools to reset the app.
 
 ## Next steps

@@ -10,7 +10,7 @@ import { currentVersionOf, useApp } from "@/lib/store";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { isAuthed, hydrated, documents } = useApp();
+  const { isAuthed, hydrated, userEmail, documents } = useApp();
 
   useEffect(() => {
     if (hydrated && !isAuthed) router.replace("/");
@@ -37,6 +37,9 @@ export default function DashboardPage() {
 
   if (!hydrated) return null;
 
+  const isEmpty = documents.length === 0;
+  const greetingName = userEmail ? userEmail.split("@")[0] : "there";
+
   return (
     <div>
       <Topbar />
@@ -44,101 +47,143 @@ export default function DashboardPage() {
         <div className="mb-7 flex items-end justify-between gap-4">
           <div>
             <h1 className="m-0 text-[28px] font-semibold tracking-tight">
-              Dashboard
+              {isEmpty ? `Welcome, ${greetingName}` : "Dashboard"}
             </h1>
             <div className="mt-1 text-muted">
-              Your document accessibility reviews
+              {isEmpty
+                ? "Upload your first document to get started."
+                : "Your document accessibility reviews"}
             </div>
           </div>
-          <Link href="/upload" className="btn btn-primary">
-            <span>+</span> Upload document
-          </Link>
+          {!isEmpty ? (
+            <Link href="/upload" className="btn btn-primary">
+              <span>+</span> Upload document
+            </Link>
+          ) : null}
         </div>
 
-        <div className="mb-7 grid grid-cols-2 gap-4 md:grid-cols-4">
-          <StatCard
-            label="Documents reviewed"
-            value={stats.reviewed}
-            trend="Across DOCX, PPTX, PDF"
-          />
-          <StatCard label="Average score" value={stats.avg} trend="Out of 100" />
-          <StatCard
-            label="Critical issues open"
-            value={stats.critical}
-            trend="Need immediate attention"
-          />
-          <StatCard
-            label="Issues resolved"
-            value={stats.resolved}
-            trend="From re-reviews"
-          />
-        </div>
+        {isEmpty ? (
+          <EmptyState />
+        ) : (
+          <>
+            <div className="mb-7 grid grid-cols-2 gap-4 md:grid-cols-4">
+              <StatCard
+                label="Documents reviewed"
+                value={stats.reviewed}
+                trend="Across DOCX, PPTX, PDF"
+              />
+              <StatCard
+                label="Average score"
+                value={stats.avg}
+                trend="Out of 100"
+              />
+              <StatCard
+                label="Critical issues open"
+                value={stats.critical}
+                trend="Need immediate attention"
+              />
+              <StatCard
+                label="Issues resolved"
+                value={stats.resolved}
+                trend="From re-reviews"
+              />
+            </div>
 
-        <div className="mb-7 flex items-center justify-between gap-5 rounded-lg2 border border-dashed border-border-strong bg-surface p-7">
-          <div>
-            <strong className="block text-[16px] font-semibold">
-              Ready to review another document?
-            </strong>
-            <span className="text-[14px] text-muted">
-              DOCX, PPTX, and PDF files up to 50 MB are supported.
-            </span>
-          </div>
-          <Link href="/upload" className="btn btn-primary">
-            Upload a file
-          </Link>
-        </div>
-
-        <div className="mb-3.5 flex items-center justify-between">
-          <h2 className="m-0 text-[16px] font-semibold">Completed reviews</h2>
-          <span className="text-[13px] text-muted">
-            Click a row to open the report
-          </span>
-        </div>
-
-        <div className="grid gap-3">
-          {documents.map((doc) => {
-            const v = currentVersionOf(doc);
-            const open = v.issues.filter((i) => !i.resolved).length;
-            const crit = v.issues.filter(
-              (i) => i.severity === "critical" && !i.resolved,
-            ).length;
-            const versionLabel =
-              doc.versions.length > 1 ? ` · v${doc.versions.length}` : "";
-            return (
-              <Link
-                key={doc.id}
-                href={`/reports/${doc.id}`}
-                className="grid grid-cols-[40px_1.8fr_1fr_1fr_140px] items-center gap-4 rounded-card border border-border bg-surface px-5 py-4 transition hover:border-border-strong hover:shadow-soft-sm"
-              >
-                <FileIcon type={doc.type} />
-                <div>
-                  <div className="font-medium">{doc.name}</div>
-                  <div className="mt-0.5 text-[13px] text-subtle">
-                    {doc.size} · Reviewed {v.reviewedAt}
-                    {versionLabel}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[12.5px] text-subtle">Issues</div>
-                  <div className="text-[14px]">
-                    {open} open
-                    {crit > 0 ? (
-                      <span className="text-error"> · {crit} critical</span>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 tabular-nums">
-                  <ScoreBar score={v.score} />
-                  <span>{v.score}</span>
-                </div>
-                <div className="flex justify-end">
-                  <span className="btn btn-secondary btn-sm">View report</span>
-                </div>
+            <div className="mb-7 flex items-center justify-between gap-5 rounded-lg2 border border-dashed border-border-strong bg-surface p-7">
+              <div>
+                <strong className="block text-[16px] font-semibold">
+                  Ready to review another document?
+                </strong>
+                <span className="text-[14px] text-muted">
+                  DOCX, PPTX, and PDF files up to 50 MB are supported.
+                </span>
+              </div>
+              <Link href="/upload" className="btn btn-primary">
+                Upload a file
               </Link>
-            );
-          })}
-        </div>
+            </div>
+
+            <div className="mb-3.5 flex items-center justify-between">
+              <h2 className="m-0 text-[16px] font-semibold">Completed reviews</h2>
+              <span className="text-[13px] text-muted">
+                Click a row to open the report
+              </span>
+            </div>
+
+            <div className="grid gap-3">
+              {documents.map((doc) => {
+                const v = currentVersionOf(doc);
+                const open = v.issues.filter((i) => !i.resolved).length;
+                const crit = v.issues.filter(
+                  (i) => i.severity === "critical" && !i.resolved,
+                ).length;
+                const versionLabel =
+                  doc.versions.length > 1 ? ` · v${doc.versions.length}` : "";
+                return (
+                  <Link
+                    key={doc.id}
+                    href={`/reports/${doc.id}`}
+                    className="grid grid-cols-[40px_1.8fr_1fr_1fr_140px] items-center gap-4 rounded-card border border-border bg-surface px-5 py-4 transition hover:border-border-strong hover:shadow-soft-sm"
+                  >
+                    <FileIcon type={doc.type} />
+                    <div>
+                      <div className="font-medium">{doc.name}</div>
+                      <div className="mt-0.5 text-[13px] text-subtle">
+                        {doc.size} · Reviewed {v.reviewedAt}
+                        {versionLabel}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[12.5px] text-subtle">Issues</div>
+                      <div className="text-[14px]">
+                        {open} open
+                        {crit > 0 ? (
+                          <span className="text-error"> · {crit} critical</span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 tabular-nums">
+                      <ScoreBar score={v.score} />
+                      <span>{v.score}</span>
+                    </div>
+                    <div className="flex justify-end">
+                      <span className="btn btn-secondary btn-sm">
+                        View report
+                      </span>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </>
+        )}
       </main>
+    </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="rounded-lg2 border border-border bg-surface px-6 py-14 text-center">
+      <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl bg-accent-soft text-[28px] text-accent">
+        ↑
+      </div>
+      <h2 className="m-0 text-[22px] font-semibold tracking-tight">
+        No reviews yet
+      </h2>
+      <p className="mx-auto mt-2 max-w-md text-[15px] text-muted">
+        Upload a Word doc, PowerPoint, or PDF and Clarity will review it for
+        accessibility issues — color contrast, font size, alt text, and heading
+        structure.
+      </p>
+      <div className="mt-6">
+        <Link href="/upload" className="btn btn-primary">
+          <span>+</span> Upload your first document
+        </Link>
+      </div>
+      <div className="mt-4 text-[13px] text-subtle">
+        DOCX, PPTX, and PDF are supported.
+      </div>
     </div>
   );
 }
@@ -157,7 +202,9 @@ function StatCard({
       <div className="text-[12.5px] uppercase tracking-wider text-muted">
         {label}
       </div>
-      <div className="mt-1 text-[26px] font-semibold tracking-tight">{value}</div>
+      <div className="mt-1 text-[26px] font-semibold tracking-tight">
+        {value}
+      </div>
       <div className="mt-0.5 text-[12.5px] text-subtle">{trend}</div>
     </div>
   );

@@ -6,22 +6,31 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import type { Document, DocType, Issue } from "./types";
 import { SEVERITY_ORDER } from "./types";
 import {
-  INITIAL_DOCUMENTS,
   generateMockIssuesFor,
   inferType,
   todayString,
 } from "./mock-data";
 
-const STORAGE_KEY = "clarity_state_v1";
+const SESSION_KEY = "clarity_session_v1";
+const ACCOUNT_KEY_PREFIX = "clarity_account_v1:";
 
-interface PersistedState {
+function accountKey(email: string | null) {
+  if (!email) return null;
+  return ACCOUNT_KEY_PREFIX + email.trim().toLowerCase();
+}
+
+interface SessionState {
   isAuthed: boolean;
   userEmail: string | null;
+}
+
+interface AccountState {
   documents: Document[];
   justReviewedDocId: string | null;
 }
@@ -45,63 +54,110 @@ interface AppContextValue {
   clearJustReviewed: () => void;
   addReviewedDocument: (filename: string) => string;
   addReReview: (docId: string) => void;
-  resetDemoData: () => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
 
-function defaultState(): PersistedState {
-  return {
-    isAuthed: false,
-    userEmail: null,
-    documents: INITIAL_DOCUMENTS,
-    justReviewedDocId: null,
-  };
+function emptyAccount(): AccountState {
+  return { documents: [], justReviewedDocId: null };
+}
+
+function loadSession(): SessionState {
+  try {
+    const raw = window.localStorage.getItem(SESSION_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<SessionState>;
+      return {
+        isAuthed: !!parsed.isAuthed,
+        userEmail: parsed.userEmail ?? null,
+      };
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return { isAuthed: false, userEmail: null };
+}
+
+function loadAccount(email: string | null): AccountState {
+  const key = accountKey(email);
+  if (!key) return emptyAccount();
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<AccountState>;
+      return {
+        documents: Array.isArray(parsed.documents) ? parsed.documents : [],
+        justReviewedDocId: parsed.justReviewedDocId ?? null,
+      };
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return emptyAccount();
 }
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
-  const [state, setState] = useState<PersistedState>(defaultState);
+  const [session, setSession] = useState<SessionState>({
+    isAuthed: false,
+    userEmail: null,
+  });
+  const [account, setAccount] = useState<AccountState>(emptyAccount);
   const [toasts, setToasts] = useState<Toast[]>([]);
+
+  // Track the account key we're currently persisting under so we don't
+  // accidentally write an empty account over someone else's data during
+  // a login handoff.
+  const activeAccountKeyRef = useRef<string | null>(null);
 
   // Hydrate from localStorage on mount
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as PersistedState;
-        setState({
-          isAuthed: !!parsed.isAuthed,
-          userEmail: parsed.userEmail ?? null,
-          documents:
-            Array.isArray(parsed.documents) && parsed.documents.length
-              ? parsed.documents
-              : INITIAL_DOCUMENTS,
-          justReviewedDocId: parsed.justReviewedDocId ?? null,
-        });
-      }
-    } catch {
-      // ignore parse errors, fall back to defaults
-    }
+    const s = loadSession();
+    setSession(s);
+    const acc = loadAccount(s.userEmail);
+    setAccount(acc);
+    activeAccountKeyRef.current = accountKey(s.userEmail);
     setHydrated(true);
   }, []);
 
-  // Persist on change (only after hydration)
+  // Persist session state when it changes (after hydration)
   useEffect(() => {
     if (!hydrated) return;
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
     } catch {
-      // storage full or unavailable — ignore
+      // ignore
     }
-  }, [state, hydrated]);
+  }, [session, hydrated]);
+
+  // Persist account state when it changes (after hydration)
+  useEffect(() => {
+    if (!hydrated) return;
+    const key = activeAccountKeyRef.current;
+    if (!key) return;
+    try {
+      window.localStorage.setItem(key, JSON.stringify(account));
+    } catch {
+      // ignore
+    }
+  }, [account, hydrated]);
 
   const login = useCallback((email: string) => {
-    setState((s) => ({ ...s, isAuthed: true, userEmail: email || null }));
+    const normalized = (email || "").trim() || "guest@example.com";
+    const key = accountKey(normalized);
+    // Load that account's stored data before flipping the ref, so the
+    // write-on-change effect doesn't clobber the new account with stale data.
+    const loaded = loadAccount(normalized);
+    activeAccountKeyRef.current = key;
+    setAccount(loaded);
+    setSession({ isAuthed: true, userEmail: normalized });
   }, []);
 
   const logout = useCallback(() => {
-    setState((s) => ({ ...s, isAuthed: false, userEmail: null }));
+    // Keep account data in localStorage so the user can log back in and see it.
+    activeAccountKeyRef.current = null;
+    setAccount(emptyAccount());
+    setSession({ isAuthed: false, userEmail: null });
   }, []);
 
   const pushToast = useCallback((message: string) => {
@@ -117,7 +173,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const clearJustReviewed = useCallback(() => {
-    setState((s) =>
+    setAccount((s) =>
       s.justReviewedDocId ? { ...s, justReviewedDocId: null } : s,
     );
   }, []);
@@ -139,8 +195,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         },
       ],
     };
-    setState((s) => ({
-      ...s,
+    setAccount((s) => ({
       documents: [newDoc, ...s.documents],
       justReviewedDocId: newDoc.id,
     }));
@@ -148,7 +203,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addReReview = useCallback((docId: string) => {
-    setState((s) => {
+    setAccount((s) => {
       const docs = s.documents.map((d) => {
         if (d.id !== docId) return d;
         const prev = d.versions[d.versions.length - 1];
@@ -182,21 +237,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ],
         };
       });
-      return { ...s, documents: docs, justReviewedDocId: docId };
+      return { documents: docs, justReviewedDocId: docId };
     });
-  }, []);
-
-  const resetDemoData = useCallback(() => {
-    setState((s) => ({ ...s, documents: INITIAL_DOCUMENTS, justReviewedDocId: null }));
   }, []);
 
   const value: AppContextValue = useMemo(
     () => ({
       hydrated,
-      isAuthed: state.isAuthed,
-      userEmail: state.userEmail,
-      documents: state.documents,
-      justReviewedDocId: state.justReviewedDocId,
+      isAuthed: session.isAuthed,
+      userEmail: session.userEmail,
+      documents: account.documents,
+      justReviewedDocId: account.justReviewedDocId,
       toasts,
       login,
       logout,
@@ -205,11 +256,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       clearJustReviewed,
       addReviewedDocument,
       addReReview,
-      resetDemoData,
     }),
     [
       hydrated,
-      state,
+      session,
+      account,
       toasts,
       login,
       logout,
@@ -218,7 +269,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       clearJustReviewed,
       addReviewedDocument,
       addReReview,
-      resetDemoData,
     ],
   );
 
