@@ -183,10 +183,10 @@ export async function analyzeDocx(buffer: ArrayBuffer | Buffer): Promise<Analyze
     }
 
     // Effective paragraph-level formatting (from pPr/rPr + style chain)
-    const paragraphRunProps = mergeRunProps(
-      styleRunPropsFor(pStyleId, styleIndex),
-      getNested(p, ["w:pPr", "w:rPr"]) as RawXmlNode | undefined,
-    );
+    const paragraphRunProps: RunProps = {
+      ...styleRunProps(pStyleId, styleIndex),
+      ...readRunProps(getNested(p, ["w:pPr", "w:rPr"]) as RawXmlNode | undefined),
+    };
 
     // Walk runs
     const runs = asArray(p["w:r"]);
@@ -202,10 +202,11 @@ export async function analyzeDocx(buffer: ArrayBuffer | Buffer): Promise<Analyze
       stats.runs++;
       const rPr = getNested(r, ["w:rPr"]) as RawXmlNode | undefined;
       const rStyleId = getAttr(getNested(rPr, ["w:rStyle"]), "@_w:val") || "";
-      const effective = mergeRunProps(
-        paragraphRunProps,
-        mergeRunProps(styleRunPropsFor(rStyleId, styleIndex), rPr),
-      );
+      const effective: RunProps = {
+        ...paragraphRunProps,
+        ...styleRunProps(rStyleId, styleIndex),
+        ...readRunProps(rPr),
+      };
 
       const text = extractRunText(r as RawXmlNode);
       if (!text.trim()) continue;
@@ -401,9 +402,12 @@ function headingLevelFromStyle(styleId: string, styles: StyleIndex): number | nu
   return null;
 }
 
-function styleRunPropsFor(styleId: string, styles: StyleIndex): RawXmlNode | undefined {
-  if (!styleId) return undefined;
-  // Walk the basedOn chain, collecting rPr with child-wins semantics.
+/**
+ * Resolve a style's effective run properties by walking the basedOn chain
+ * (parent first, child wins).
+ */
+function styleRunProps(styleId: string, styles: StyleIndex): RunProps {
+  if (!styleId) return {};
   const chain: RawXmlNode[] = [];
   const visited = new Set<string>();
   let cur: StyleEntry | undefined = styles[styleId];
@@ -412,12 +416,11 @@ function styleRunPropsFor(styleId: string, styles: StyleIndex): RawXmlNode | und
     if (cur.rPr) chain.unshift(cur.rPr); // parent-first
     cur = cur.basedOn ? styles[cur.basedOn] : undefined;
   }
-  if (chain.length === 0) return undefined;
   let merged: RunProps = {};
   for (const rPr of chain) {
-    merged = mergeRunPropsObj(merged, readRunProps(rPr));
+    merged = { ...merged, ...readRunProps(rPr) };
   }
-  return runPropsToNode(merged);
+  return merged;
 }
 
 // ---------- Run props ----------
@@ -446,27 +449,6 @@ function readRunProps(rPr: RawXmlNode | undefined): RunProps {
   if (shdNorm) out.shd = shdNorm;
 
   return out;
-}
-
-function runPropsToNode(p: RunProps): RawXmlNode {
-  // Only used internally to let mergeRunProps treat style-derived and direct
-  // formatting with the same shape.
-  const node: RawXmlNode = {};
-  if (p.color) node["w:color"] = { "@_w:val": p.color.replace("#", "") };
-  if (p.sizeHalfPt != null) node["w:sz"] = { "@_w:val": String(p.sizeHalfPt) };
-  if (p.shd) node["w:shd"] = { "@_w:fill": p.shd.replace("#", "") };
-  return node;
-}
-
-function mergeRunPropsObj(parent: RunProps, child: RunProps): RunProps {
-  return { ...parent, ...child };
-}
-
-function mergeRunProps(
-  parent: RawXmlNode | undefined,
-  child: RawXmlNode | undefined,
-): RunProps {
-  return mergeRunPropsObj(readRunProps(parent), readRunProps(child));
 }
 
 // ---------- Images + alt text ----------
