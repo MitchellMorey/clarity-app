@@ -19,7 +19,7 @@
 
 import JSZip from "jszip";
 import { XMLParser } from "fast-xml-parser";
-import type { Issue, IssueSeverity } from "./types";
+import type { Issue, IssueSeverity, IssuePreview } from "./types";
 
 export interface AnalyzeResult {
   issues: Issue[];
@@ -164,29 +164,70 @@ export async function analyzeDocx(buffer: ArrayBuffer | Buffer): Promise<Analyze
   // Deduplicate similar issues so a single repeated problem (e.g. the same
   // low-contrast color used throughout the doc) shows as one line item,
   // with its location summarizing the earliest occurrences.
-  const contrastBuckets = new Map<string, { ratio: number; paragraphs: number[]; severity: IssueSeverity }>();
-  const smallFontBuckets = new Map<string, { size: number; paragraphs: number[]; severity: IssueSeverity }>();
-  const headingOrder: { level: number; paragraphIndex: number; text: string }[] = [];
+  const contrastBuckets = new Map<
+    string,
+    {
+      ratio: number;
+      paragraphs: number[];
+      severity: IssueSeverity;
+      preview?: IssuePreview;
+    }
+  >();
+  const smallFontBuckets = new Map<
+    string,
+    {
+      size: number;
+      paragraphs: number[];
+      severity: IssueSeverity;
+      preview?: IssuePreview;
+    }
+  >();
+  const headingOrder: {
+    level: number;
+    paragraphIndex: number;
+    text: string;
+    preview?: IssuePreview;
+  }[] = [];
 
   const paragraphs = asArray(body["w:p"]);
   paragraphs.forEach((p, paragraphIndex) => {
     stats.paragraphs++;
     const pStyleId = getAttr(getNested(p, ["w:pPr", "w:pStyle"]), "@_w:val") || "";
     const headingLevel = headingLevelFromStyle(pStyleId, styleIndex);
-    if (headingLevel !== null) {
-      stats.headings++;
-      headingOrder.push({
-        level: headingLevel,
-        paragraphIndex,
-        text: extractParagraphText(p).slice(0, 80) || "(empty)",
-      });
-    }
 
     // Effective paragraph-level formatting (from pPr/rPr + style chain)
     const paragraphRunProps: RunProps = {
       ...styleRunProps(pStyleId, styleIndex),
       ...readRunProps(getNested(p, ["w:pPr", "w:rPr"]) as RawXmlNode | undefined),
     };
+
+    if (headingLevel !== null) {
+      stats.headings++;
+      const headingText = extractParagraphText(p).slice(0, 80) || "(empty)";
+      // Capture formatting for the heading preview from the first non-empty run
+      // (falling back to paragraph-level props).
+      const firstRun = asArray(p["w:r"]).find((r) =>
+        extractRunText(r as RawXmlNode).trim().length > 0,
+      ) as RawXmlNode | undefined;
+      let headingProps: RunProps = paragraphRunProps;
+      if (firstRun) {
+        const rPr = getNested(firstRun, ["w:rPr"]) as RawXmlNode | undefined;
+        const rStyleId = getAttr(getNested(rPr, ["w:rStyle"]), "@_w:val") || "";
+        headingProps = {
+          ...paragraphRunProps,
+          ...styleRunProps(rStyleId, styleIndex),
+          ...readRunProps(rPr),
+        };
+      }
+      headingOrder.push({
+        level: headingLevel,
+        paragraphIndex,
+        text: headingText,
+        preview: buildPreview(headingText, headingProps, bgColor, {
+          headingLevel,
+        }),
+      });
+    }
 
     // Walk runs
     const runs = asArray(p["w:r"]);
@@ -197,6 +238,10 @@ export async function analyzeDocx(buffer: ArrayBuffer | Buffer): Promise<Analyze
         runs.push(r);
       }
     }
+
+    // Accumulate paragraph-level text so we can enrich previews with a bit
+    // more surrounding context than a single run would provide.
+    const paragraphText = extractParagraphText(p);
 
     for (const r of runs) {
       stats.runs++;
@@ -227,10 +272,12 @@ export async function analyzeDocx(buffer: ArrayBuffer | Buffer): Promise<Analyze
             // Keep the worst severity
             if (severity === "critical") existing.severity = "critical";
           } else {
+            const sample = pickSampleText(text, paragraphText);
             contrastBuckets.set(key, {
               ratio,
               paragraphs: [paragraphIndex + 1],
               severity,
+              preview: buildPreview(sample, effective, bgColor),
             });
           }
         }
@@ -249,10 +296,12 @@ export async function analyzeDocx(buffer: ArrayBuffer | Buffer): Promise<Analyze
             }
             if (severity === "critical") existing.severity = "critical";
           } else {
+            const sample = pickSampleText(text, paragraphText);
             smallFontBuckets.set(key, {
               size: pt,
               paragraphs: [paragraphIndex + 1],
               severity,
+              preview: buildPreview(sample, effective, bgColor),
             });
           }
         }
@@ -263,7 +312,7 @@ export async function analyzeDocx(buffer: ArrayBuffer | Buffer): Promise<Analyze
     const drawings = collectDrawingImages(p);
     for (const img of drawings) {
       stats.images++;
-      const altIssue = classifyAltText(img.alt, paragraphIndex + 1);
+      const altIssue = classifyAltText(img.alt, paragraphIndex + 1, img.name);
       if (altIssue) issues.push(altIssue);
     }
   });
@@ -285,6 +334,7 @@ export async function analyzeDocx(buffer: ArrayBuffer | Buffer): Promise<Analyze
         ratio: formatRatio(bucket.ratio),
         required: "4.5:1",
         suggestion: contrastSuggestion(bucket.ratio, fg, bg),
+        preview: bucket.preview,
       }),
     );
   }
@@ -305,6 +355,7 @@ export async function analyzeDocx(buffer: ArrayBuffer | Buffer): Promise<Analyze
           bucket.severity === "critical"
             ? "Increase body text to at least 12pt. 9pt is too small for most readers and fails accessibility guidelines."
             : "Use at least 12pt for body text so readers don't have to zoom in.",
+        preview: bucket.preview,
       }),
     );
   }
@@ -429,6 +480,9 @@ interface RunProps {
   color?: string; // normalized #rrggbb
   sizeHalfPt?: number;
   shd?: string; // background shading, normalized hex
+  fontFamily?: string;
+  bold?: boolean;
+  italic?: boolean;
 }
 
 function readRunProps(rPr: RawXmlNode | undefined): RunProps {
@@ -448,49 +502,142 @@ function readRunProps(rPr: RawXmlNode | undefined): RunProps {
   const shdNorm = normalizeHex(shdFill);
   if (shdNorm) out.shd = shdNorm;
 
+  // Font family — OOXML exposes ascii/hAnsi/cs/eastAsia variants; ascii is
+  // the most representative for Latin text. Fall back to hAnsi if needed.
+  const rFonts = getNested(rPr, ["w:rFonts"]) as RawXmlNode | undefined;
+  if (rFonts) {
+    const family = getAttr(rFonts, "@_w:ascii") || getAttr(rFonts, "@_w:hAnsi");
+    if (family && family.trim()) out.fontFamily = family.trim();
+  }
+
+  // Bold/italic — toggles: present (even self-closing) = on, w:val="0"/"false" = off
+  const bold = rPr["w:b"];
+  if (bold !== undefined) {
+    const val = getAttr(bold as RawXmlNode, "@_w:val");
+    out.bold = !(val === "0" || val === "false");
+  }
+  const italic = rPr["w:i"];
+  if (italic !== undefined) {
+    const val = getAttr(italic as RawXmlNode, "@_w:val");
+    out.italic = !(val === "0" || val === "false");
+  }
+
   return out;
 }
 
 // ---------- Images + alt text ----------
 
 interface ImageAlt {
+  /** Alt text if present, otherwise null (true "missing alt text" case). */
   alt: string | null;
+  /** Optional picture name (e.g. "Picture 1" or "bird.jpg") — used for locators. */
+  name?: string;
 }
 
-function collectDrawingImages(paragraph: RawXmlNode): ImageAlt[] {
-  const out: ImageAlt[] = [];
-  const drawings = asArray(paragraph["w:drawing"]);
-  for (const d of drawings) {
-    const inlines = asArray(getNested(d, ["wp:inline"]));
-    const anchors = asArray(getNested(d, ["wp:anchor"]));
-    for (const container of [...inlines, ...anchors]) {
-      const docPr = getNested(container, ["wp:docPr"]) as RawXmlNode | undefined;
-      if (!docPr) continue;
-      const descr = (getAttr(docPr, "@_descr") ?? "").trim();
-      const title = (getAttr(docPr, "@_title") ?? "").trim();
-      // Prefer descr; fall back to title.
-      const alt = descr || title || null;
-      out.push({ alt });
-    }
+/**
+ * Recursively collect every descendant node whose key is one of `names`.
+ * Once a node matches, we don't recurse into it — that prevents double-
+ * counting if a matched node happens to contain another one nested inside.
+ */
+function collectDescendants(
+  node: unknown,
+  names: Set<string>,
+  out: RawXmlNode[] = [],
+): RawXmlNode[] {
+  if (node == null) return out;
+  if (Array.isArray(node)) {
+    for (const item of node) collectDescendants(item, names, out);
+    return out;
   }
-  // Also collect older VML-era images with v:shape alt="..."
-  for (const r of asArray(paragraph["w:r"])) {
-    const shapes = asArray(getNested(r, ["w:pict", "v:shape"]));
-    for (const s of shapes) {
-      const alt = (getAttr(s, "@_alt") ?? "").trim() || null;
-      out.push({ alt });
+  if (typeof node !== "object") return out;
+  const obj = node as RawXmlNode;
+  for (const [key, value] of Object.entries(obj)) {
+    // Skip attribute-ish keys
+    if (key.startsWith("@_") || key === "#text") continue;
+    if (names.has(key)) {
+      const arr = Array.isArray(value) ? value : [value];
+      for (const v of arr) {
+        if (v && typeof v === "object") out.push(v as RawXmlNode);
+      }
+      // Intentionally don't recurse into matched nodes.
+    } else {
+      collectDescendants(value, names, out);
     }
   }
   return out;
 }
 
-function classifyAltText(alt: string | null, paragraphIndex: number): Issue | null {
+function collectDrawingImages(paragraph: RawXmlNode): ImageAlt[] {
+  const out: ImageAlt[] = [];
+
+  // Modern DrawingML pictures: <w:drawing> can live directly under <w:p>,
+  // inside a <w:r>, inside <w:hyperlink>/<w:r>, or inside
+  // <mc:AlternateContent><mc:Choice>. A recursive walk catches them all.
+  const drawings = collectDescendants(paragraph, new Set(["w:drawing"]));
+  for (const d of drawings) {
+    const inlines = asArray(getNested(d, ["wp:inline"]));
+    const anchors = asArray(getNested(d, ["wp:anchor"]));
+    const containers = [...inlines, ...anchors];
+    if (containers.length === 0) {
+      // Occasionally the inline/anchor wrapper is parsed without the prefix
+      // we expect — walk any descendant wp:docPr as a fallback.
+      const docPrs = collectDescendants(d, new Set(["wp:docPr"]));
+      if (docPrs.length === 0) {
+        // Still a picture: count it, but alt is unknown → treat as missing.
+        out.push({ alt: null });
+      } else {
+        for (const docPr of docPrs) {
+          out.push(readDocPrAlt(docPr));
+        }
+      }
+      continue;
+    }
+    for (const container of containers) {
+      const docPr = getNested(container, ["wp:docPr"]) as RawXmlNode | undefined;
+      if (!docPr) {
+        // A picture wrapper with no docPr means no alt text at all.
+        out.push({ alt: null });
+        continue;
+      }
+      out.push(readDocPrAlt(docPr));
+    }
+  }
+
+  // Older VML-era images: <v:shape alt="...">, usually inside <w:pict>.
+  // These can appear inside runs or inside <mc:Fallback>.
+  const shapes = collectDescendants(paragraph, new Set(["v:shape"]));
+  for (const s of shapes) {
+    const alt = (getAttr(s, "@_alt") ?? "").trim() || null;
+    const name = (getAttr(s, "@_id") ?? "").trim() || undefined;
+    out.push({ alt, name });
+  }
+
+  return out;
+}
+
+function readDocPrAlt(docPr: RawXmlNode): ImageAlt {
+  const descr = (getAttr(docPr, "@_descr") ?? "").trim();
+  const title = (getAttr(docPr, "@_title") ?? "").trim();
+  const name = (getAttr(docPr, "@_name") ?? "").trim() || undefined;
+  // Prefer descr; fall back to title. An empty string counts as missing.
+  const alt = descr || title || null;
+  return { alt, name };
+}
+
+function classifyAltText(
+  alt: string | null,
+  paragraphIndex: number,
+  name?: string,
+): Issue | null {
+  const locator = name
+    ? `Paragraph ${paragraphIndex} · ${name}`
+    : `Paragraph ${paragraphIndex}`;
   if (!alt) {
     return makeIssue({
       category: "alt",
       severity: "critical",
       title: "Image missing alt text",
-      location: `Paragraph ${paragraphIndex}`,
+      location: locator,
       suggestion:
         "In Word, right-click the image → View Alt Text, and describe the image's purpose. If it's purely decorative, mark it as decorative.",
     });
@@ -504,7 +651,7 @@ function classifyAltText(alt: string | null, paragraphIndex: number): Issue | nu
       category: "alt",
       severity: "warning",
       title: "Alt text is a filename or generic placeholder",
-      location: `Paragraph ${paragraphIndex}`,
+      location: locator,
       detail: `Current alt: "${alt}"`,
       suggestion:
         "Replace the filename with a short description of what the image shows and why it's there (e.g. 'Revenue grew 34% year over year').",
@@ -515,7 +662,7 @@ function classifyAltText(alt: string | null, paragraphIndex: number): Issue | nu
       category: "alt",
       severity: "warning",
       title: "Alt text is too short to be meaningful",
-      location: `Paragraph ${paragraphIndex}`,
+      location: locator,
       detail: `Current alt: "${alt}"`,
       suggestion:
         "Use a full phrase describing the image. One or two characters usually can't convey the image's purpose.",
@@ -527,14 +674,25 @@ function classifyAltText(alt: string | null, paragraphIndex: number): Issue | nu
 // ---------- Heading evaluation ----------
 
 function evaluateHeadings(
-  headings: { level: number; paragraphIndex: number; text: string }[],
+  headings: {
+    level: number;
+    paragraphIndex: number;
+    text: string;
+    preview?: IssuePreview;
+  }[],
 ): Issue[] {
   const issues: Issue[] = [];
   if (headings.length === 0) return issues;
 
   // Skipped levels
   let prevLevel = 0;
-  const skips: { from: number; to: number; paragraphIndex: number; text: string }[] = [];
+  const skips: {
+    from: number;
+    to: number;
+    paragraphIndex: number;
+    text: string;
+    preview?: IssuePreview;
+  }[] = [];
   for (const h of headings) {
     if (prevLevel > 0 && h.level > prevLevel + 1) {
       skips.push({
@@ -542,6 +700,7 @@ function evaluateHeadings(
         to: h.level,
         paragraphIndex: h.paragraphIndex,
         text: h.text,
+        preview: h.preview,
       });
     }
     prevLevel = h.level;
@@ -557,6 +716,7 @@ function evaluateHeadings(
         detail: skips.length > 1 ? `${skips.length} similar skips in the document.` : undefined,
         suggestion:
           "Use consecutive heading levels so screen-reader users can navigate the outline. If H3 follows H1, promote it to H2.",
+        preview: first.preview,
       }),
     );
   }
@@ -592,6 +752,51 @@ function evaluateHeadings(
   }
 
   return issues;
+}
+
+// ---------- Preview helpers ----------
+
+const PREVIEW_MAX_LEN = 140;
+const PREVIEW_MIN_LEN = 40;
+
+/**
+ * Pick a short text sample for the preview. Prefer the run's own text, but if
+ * it's very short (a single word in a styled phrase, say), fall back to the
+ * enclosing paragraph so the user sees enough context to locate the problem.
+ */
+function pickSampleText(runText: string, paragraphText: string): string {
+  const run = runText.trim();
+  const para = paragraphText.trim();
+  let sample = run;
+  if (sample.length < PREVIEW_MIN_LEN && para.length > sample.length) {
+    sample = para;
+  }
+  if (sample.length > PREVIEW_MAX_LEN) {
+    sample = sample.slice(0, PREVIEW_MAX_LEN).trimEnd() + "…";
+  }
+  return sample;
+}
+
+function buildPreview(
+  text: string,
+  props: RunProps,
+  docBg: string,
+  extra?: { headingLevel?: number },
+): IssuePreview {
+  const preview: IssuePreview = {
+    text,
+  };
+  if (props.color) preview.fg = props.color;
+  // Background: prefer explicit run shading, then fall back to doc bg.
+  preview.bg = props.shd ?? docBg;
+  if (props.sizeHalfPt != null) {
+    preview.sizePt = Math.round(props.sizeHalfPt * HALF_POINT_TO_POINT * 10) / 10;
+  }
+  if (props.fontFamily) preview.fontFamily = props.fontFamily;
+  if (props.bold) preview.bold = true;
+  if (props.italic) preview.italic = true;
+  if (extra?.headingLevel) preview.headingLevel = extra.headingLevel;
+  return preview;
 }
 
 // ---------- XML helpers ----------

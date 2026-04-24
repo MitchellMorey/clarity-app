@@ -152,22 +152,6 @@ export default function ReportPage({ params }: { params: { id: string } }) {
           </div>
         ) : null}
 
-        {doc.type === "pptx" ? (
-          <div className="mb-5 flex items-start gap-3 rounded-card border border-amber-200 bg-warn-soft px-5 py-3.5">
-            <div className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-full bg-warn text-[14px] text-white">
-              !
-            </div>
-            <div>
-              <strong className="text-warn">Preview analysis</strong>{" "}
-              <span className="text-text">
-                The issues below are a sample set to illustrate how PPTX reports
-                will look. Real slide-by-slide analysis for PowerPoint files is
-                still in development. DOCX reviews are real.
-              </span>
-            </div>
-          </div>
-        ) : null}
-
         <section className="mb-6 rounded-lg2 border border-border bg-surface px-7 py-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3.5">
@@ -286,18 +270,19 @@ export default function ReportPage({ params }: { params: { id: string } }) {
         }
       >
         <p className="m-0 mb-4 text-muted">
-          Upload your updated document. We&apos;ll compare it against the previous
-          review and show which issues have been resolved.
+          Upload your revised {doc.type.toUpperCase()}. We&apos;ll run a fresh
+          accessibility review and compare it against the previous version so
+          you can see exactly which issues have been resolved.
         </p>
         <div className="rounded-lg2 border-2 border-dashed border-border-strong bg-surface px-5 py-8 text-center">
           <div className="mx-auto mb-2 grid h-11 w-11 place-items-center rounded-xl bg-accent-soft text-[18px] text-accent">
             ↑
           </div>
           <h3 className="m-0 text-[15px] font-semibold">
-            Drop the revised file, or simulate a re-upload
+            Choose the revised file to continue
           </h3>
           <p className="mb-3 mt-1 text-[13px] text-muted">
-            A new review will start immediately.
+            A fresh review will start as soon as the file is uploaded.
           </p>
           <button
             className="btn btn-primary btn-sm"
@@ -306,7 +291,7 @@ export default function ReportPage({ params }: { params: { id: string } }) {
               router.push(`/upload?review=${doc.id}`);
             }}
           >
-            Simulate re-upload
+            Choose revised file
           </button>
         </div>
       </Modal>

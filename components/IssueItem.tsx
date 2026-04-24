@@ -1,10 +1,15 @@
 import type { Issue } from "@/lib/types";
 import { ISSUE_CATEGORY_META } from "@/lib/types";
 import { SeverityBadge } from "./SeverityBadge";
+import { DocPreview } from "./DocPreview";
 
 export function IssueItem({ issue }: { issue: Issue }) {
   const showContrast =
     issue.category === "contrast" && issue.fg && issue.bg && issue.ratio;
+  // Only show a visual preview when we have real text to render. Alt-text
+  // issues have no readable text, so we skip them.
+  const showPreview =
+    !!issue.preview && !!issue.preview.text && issue.category !== "alt";
 
   return (
     <li
@@ -47,6 +52,7 @@ export function IssueItem({ issue }: { issue: Issue }) {
             </span>
           </div>
         ) : null}
+        {showPreview ? <DocPreview preview={issue.preview!} /> : null}
         {issue.suggestion && !issue.resolved ? (
           <div className="mt-2 rounded-md border-l-[3px] border-info bg-info-soft px-3 py-2 text-[13px]">
             <strong className="text-info">Fix:</strong> {issue.suggestion}

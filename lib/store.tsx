@@ -9,8 +9,13 @@ import {
   useRef,
   useState,
 } from "react";
-import type { Document, DocType, Issue } from "./types";
-import { SEVERITY_ORDER } from "./types";
+import type {
+  Document,
+  DocType,
+  Issue,
+  PdfFinding,
+  PdfReview,
+} from "./types";
 import { todayString } from "./mock-data";
 
 const SESSION_KEY = "clarity_session_v1";
@@ -28,7 +33,9 @@ interface SessionState {
 
 interface AccountState {
   documents: Document[];
+  pdfReviews: PdfReview[];
   justReviewedDocId: string | null;
+  justReviewedPdfId: string | null;
 }
 
 interface Toast {
@@ -41,7 +48,9 @@ interface AppContextValue {
   isAuthed: boolean;
   userEmail: string | null;
   documents: Document[];
+  pdfReviews: PdfReview[];
   justReviewedDocId: string | null;
+  justReviewedPdfId: string | null;
   toasts: Toast[];
   login: (email: string) => void;
   logout: () => void;
@@ -49,7 +58,10 @@ interface AppContextValue {
   dismissToast: (id: string) => void;
   clearJustReviewed: () => void;
   addReviewedDocument: (payload: AddReviewPayload) => string;
-  addReReview: (docId: string) => void;
+  addReReview: (docId: string, payload: ReReviewPayload) => void;
+  addPdfReview: (payload: AddPdfReviewPayload) => string;
+  togglePdfFindingResolved: (reviewId: string, findingId: string) => void;
+  deletePdfReview: (reviewId: string) => void;
 }
 
 export interface AddReviewPayload {
@@ -60,10 +72,35 @@ export interface AddReviewPayload {
   issues: Issue[];
 }
 
+/**
+ * A re-review reuses the document's existing id, type, and name but replaces
+ * the file size with whatever the revised upload reports, and diffs the new
+ * analyzer output against the previous version to figure out which issues
+ * have actually been fixed.
+ */
+export interface ReReviewPayload {
+  size: string;
+  score: number;
+  issues: Issue[];
+}
+
+export interface AddPdfReviewPayload {
+  pdfName: string;
+  reportName: string;
+  pdfSize: string;
+  score: number;
+  findings: PdfFinding[];
+}
+
 const AppContext = createContext<AppContextValue | null>(null);
 
 function emptyAccount(): AccountState {
-  return { documents: [], justReviewedDocId: null };
+  return {
+    documents: [],
+    pdfReviews: [],
+    justReviewedDocId: null,
+    justReviewedPdfId: null,
+  };
 }
 
 function loadSession(): SessionState {
@@ -91,7 +128,9 @@ function loadAccount(email: string | null): AccountState {
       const parsed = JSON.parse(raw) as Partial<AccountState>;
       return {
         documents: Array.isArray(parsed.documents) ? parsed.documents : [],
+        pdfReviews: Array.isArray(parsed.pdfReviews) ? parsed.pdfReviews : [],
         justReviewedDocId: parsed.justReviewedDocId ?? null,
+        justReviewedPdfId: parsed.justReviewedPdfId ?? null,
       };
     }
   } catch {
@@ -177,9 +216,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const clearJustReviewed = useCallback(() => {
-    setAccount((s) =>
-      s.justReviewedDocId ? { ...s, justReviewedDocId: null } : s,
-    );
+    setAccount((s) => {
+      if (!s.justReviewedDocId && !s.justReviewedPdfId) return s;
+      return { ...s, justReviewedDocId: null, justReviewedPdfId: null };
+    });
   }, []);
 
   const addReviewedDocument = useCallback((payload: AddReviewPayload) => {
@@ -199,49 +239,133 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ],
     };
     setAccount((s) => ({
+      ...s,
       documents: [newDoc, ...s.documents],
       justReviewedDocId: newDoc.id,
     }));
     return newDoc.id;
   }, []);
 
-  const addReReview = useCallback((docId: string) => {
-    setAccount((s) => {
-      const docs = s.documents.map((d) => {
-        if (d.id !== docId) return d;
-        const prev = d.versions[d.versions.length - 1];
-        const open = prev.issues.filter((i) => !i.resolved);
-        // Resolve ~70% of open issues, prioritizing critical
-        const toResolveCount = Math.max(1, Math.floor(open.length * 0.7));
-        const sorted = [...open].sort(
-          (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity],
-        );
-        const resolveIds = new Set(sorted.slice(0, toResolveCount).map((i) => i.id));
-        const newIssues: Issue[] = prev.issues.map((i) =>
-          i.resolved || resolveIds.has(i.id) ? { ...i, resolved: true } : i,
-        );
-        const resolvedNow = newIssues.filter((i) => i.resolved).length;
-        const total = newIssues.length;
-        const newScore = Math.min(
-          100,
-          Math.round(60 + (resolvedNow / total) * 40),
-        );
-        return {
-          ...d,
-          versions: [
-            ...d.versions,
-            {
-              version: prev.version + 1,
-              reviewedAt: todayString(),
-              score: newScore,
-              issues: newIssues,
-              resolvedSinceLast: toResolveCount,
-            },
-          ],
-        };
+  const addReReview = useCallback(
+    (docId: string, payload: ReReviewPayload) => {
+      setAccount((s) => {
+        const docs = s.documents.map((d) => {
+          if (d.id !== docId) return d;
+          const prev = d.versions[d.versions.length - 1];
+
+          // Fingerprint an issue by the properties that remain stable across
+          // versions. Two issues with the same fingerprint represent the same
+          // real-world problem — e.g. a "same color pair" contrast issue will
+          // fingerprint identically even if the affected paragraph count or
+          // ordering changed between versions.
+          const fp = (i: Issue): string => {
+            if (i.category === "contrast") {
+              return `contrast|${i.fg ?? ""}|${i.bg ?? ""}`;
+            }
+            if (i.category === "font") {
+              // Detail includes "Current: 10pt · Recommended: 12pt+" which
+              // uniquely identifies the offending size bucket.
+              return `font|${i.detail ?? ""}`;
+            }
+            if (i.category === "alt") {
+              // Location includes the picture name, so this matches the same
+              // picture across versions.
+              return `alt|${i.location}`;
+            }
+            // heading: title encodes e.g. "Heading levels skip from H1 to H3"
+            return `heading|${i.title}`;
+          };
+
+          const newFps = new Set(payload.issues.map(fp));
+
+          // Previously-open issues whose fingerprint is gone from the new
+          // analysis → these are the ones the user fixed.
+          const prevOpen = prev.issues.filter((i) => !i.resolved);
+          const newlyResolved = prevOpen
+            .filter((i) => !newFps.has(fp(i)))
+            .map((i) => ({ ...i, resolved: true as const }));
+
+          // Previously-resolved issues stay resolved, unless the new analysis
+          // shows them reappearing (then the new open entry takes over).
+          const previouslyResolved = prev.issues.filter((i) => i.resolved);
+          const stillResolved = previouslyResolved.filter(
+            (i) => !newFps.has(fp(i)),
+          );
+
+          // All open issues in v2 come from the new analysis. Resolved items
+          // are carried over so the user can see exactly what they fixed.
+          const mergedIssues: Issue[] = [
+            ...payload.issues,
+            ...newlyResolved,
+            ...stillResolved,
+          ];
+
+          return {
+            ...d,
+            // Reflect the revised file's size in the document header.
+            size: payload.size || d.size,
+            versions: [
+              ...d.versions,
+              {
+                version: prev.version + 1,
+                reviewedAt: todayString(),
+                score: payload.score,
+                issues: mergedIssues,
+                resolvedSinceLast: newlyResolved.length,
+              },
+            ],
+          };
+        });
+        return { ...s, documents: docs, justReviewedDocId: docId };
       });
-      return { documents: docs, justReviewedDocId: docId };
-    });
+    },
+    [],
+  );
+
+  const addPdfReview = useCallback((payload: AddPdfReviewPayload) => {
+    const newReview: PdfReview = {
+      id: "pdf_" + Math.random().toString(36).slice(2, 7),
+      pdfName: payload.pdfName,
+      reportName: payload.reportName,
+      pdfSize: payload.pdfSize,
+      uploadedAt: todayString(),
+      score: payload.score,
+      findings: payload.findings,
+    };
+    setAccount((s) => ({
+      ...s,
+      pdfReviews: [newReview, ...s.pdfReviews],
+      justReviewedPdfId: newReview.id,
+    }));
+    return newReview.id;
+  }, []);
+
+  const togglePdfFindingResolved = useCallback(
+    (reviewId: string, findingId: string) => {
+      setAccount((s) => ({
+        ...s,
+        pdfReviews: s.pdfReviews.map((r) =>
+          r.id !== reviewId
+            ? r
+            : {
+                ...r,
+                findings: r.findings.map((f) =>
+                  f.id === findingId ? { ...f, resolved: !f.resolved } : f,
+                ),
+              },
+        ),
+      }));
+    },
+    [],
+  );
+
+  const deletePdfReview = useCallback((reviewId: string) => {
+    setAccount((s) => ({
+      ...s,
+      pdfReviews: s.pdfReviews.filter((r) => r.id !== reviewId),
+      justReviewedPdfId:
+        s.justReviewedPdfId === reviewId ? null : s.justReviewedPdfId,
+    }));
   }, []);
 
   const value: AppContextValue = useMemo(
@@ -250,7 +374,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       isAuthed: session.isAuthed,
       userEmail: session.userEmail,
       documents: account.documents,
+      pdfReviews: account.pdfReviews,
       justReviewedDocId: account.justReviewedDocId,
+      justReviewedPdfId: account.justReviewedPdfId,
       toasts,
       login,
       logout,
@@ -259,6 +385,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       clearJustReviewed,
       addReviewedDocument,
       addReReview,
+      addPdfReview,
+      togglePdfFindingResolved,
+      deletePdfReview,
     }),
     [
       hydrated,
@@ -272,6 +401,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       clearJustReviewed,
       addReviewedDocument,
       addReReview,
+      addPdfReview,
+      togglePdfFindingResolved,
+      deletePdfReview,
     ],
   );
 

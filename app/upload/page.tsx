@@ -13,8 +13,6 @@ import { bytesToLabel, generateMockIssuesFor, inferType } from "@/lib/mock-data"
 
 interface PendingReview {
   payload: AddReviewPayload;
-  /** true if the issues came from the real analyzer, false if mock */
-  isReal: boolean;
 }
 
 function UploadView() {
@@ -46,31 +44,6 @@ function UploadView() {
   const reReviewDoc = reviewDocId
     ? documents.find((d) => d.id === reviewDocId)
     : undefined;
-
-  // If we arrived on /upload?review=docId, auto-kick off a re-review.
-  // Re-reviews currently use the heuristic resolution path (not the real
-  // analyzer). Upgrading re-review to analyze the new file is a follow-up.
-  useEffect(() => {
-    if (!hydrated || !reReviewDoc) return;
-    if (analyzing) return;
-    setFilename(`${reReviewDoc.name} (revised)`);
-    setAnimDone(false);
-    finalizedRef.current = false;
-    // For re-review, skip the API and just wait for the animation, then
-    // apply the heuristic resolution via addReReview.
-    setPending({
-      payload: {
-        name: reReviewDoc.name,
-        type: reReviewDoc.type,
-        size: reReviewDoc.size,
-        score: 0,
-        issues: [],
-      },
-      isReal: false,
-    });
-    setAnalyzing(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, reReviewDoc?.id]);
 
   const resetAnalysis = useCallback(() => {
     setAnalyzing(false);
@@ -104,34 +77,27 @@ function UploadView() {
             score: 71,
             issues: generateMockIssuesFor(type),
           },
-          isReal: false,
         });
         return;
       }
 
-      if (ext !== "docx" && ext !== "pptx" && ext !== "ppt") {
+      if (ext !== "docx" && ext !== "pptx") {
         pushToast("Only .docx and .pptx files are supported right now.");
         resetAnalysis();
         return;
       }
 
-      if (type === "pptx") {
-        // PPTX still uses placeholder analysis. The report page shows a
-        // "Preview analysis" banner so users can tell the difference.
-        setPending({
-          payload: {
-            name,
-            type,
-            size: bytesToLabel(f.size),
-            score: 71,
-            issues: generateMockIssuesFor(type),
-          },
-          isReal: false,
-        });
+      // Re-review mode: the revised file should match the original's type so
+      // we're actually comparing apples to apples.
+      if (reReviewDoc && type !== reReviewDoc.type) {
+        pushToast(
+          `This document was originally reviewed as ${reReviewDoc.type.toUpperCase()}. Please upload a ${reReviewDoc.type.toUpperCase()} file for the revised version.`,
+        );
+        resetAnalysis();
         return;
       }
 
-      // DOCX → real analyzer
+      // Both DOCX and PPTX are routed through the real analyzer API.
       const fd = new FormData();
       fd.append("file", f);
 
@@ -154,7 +120,6 @@ function UploadView() {
             score: data.score,
             issues: data.issues,
           },
-          isReal: true,
         });
       } catch (err) {
         const message =
@@ -163,7 +128,7 @@ function UploadView() {
         resetAnalysis();
       }
     },
-    [pushToast, resetAnalysis],
+    [pushToast, resetAnalysis, reReviewDoc],
   );
 
   // Finalize once both the animation has played out AND we have a pending result.
@@ -173,16 +138,19 @@ function UploadView() {
     finalizedRef.current = true;
 
     if (reReviewDoc) {
-      addReReview(reReviewDoc.id);
+      // Real re-review: feed the fresh analysis into the store, which diffs
+      // it against the previous version to figure out which issues are
+      // actually resolved.
+      addReReview(reReviewDoc.id, {
+        size: pending.payload.size,
+        score: pending.payload.score,
+        issues: pending.payload.issues,
+      });
       pushToast("Re-review complete");
       router.push(`/reports/${reReviewDoc.id}`);
     } else {
       const id = addReviewedDocument(pending.payload);
-      pushToast(
-        pending.isReal
-          ? "Review complete"
-          : "Preview review ready (PPTX parsing coming soon)",
-      );
+      pushToast("Review complete");
       router.push(`/reports/${id}`);
     }
   }, [
@@ -199,11 +167,11 @@ function UploadView() {
   if (!hydrated) return null;
 
   const title = reReviewDoc
-    ? `Re-reviewing ${reReviewDoc.name}`
+    ? `Re-review ${reReviewDoc.name}`
     : "Upload a document";
   const subtitle = reReviewDoc
-    ? "Analyzing your revised document against the previous review."
-    : "DOCX gets a real accessibility review. PPTX currently returns a preview analysis.";
+    ? `Upload your revised ${reReviewDoc.type.toUpperCase()} and we'll compare it against the previous review.`
+    : "Upload a Word document or PowerPoint deck and we'll flag accessibility problems you can fix in the source file.";
 
   return (
     <div>
@@ -216,14 +184,22 @@ function UploadView() {
             </h1>
             <div className="mt-1 text-muted">{subtitle}</div>
           </div>
-          <Link href="/dashboard" className="btn btn-secondary">
-            ← Back to dashboard
+          <Link
+            href={reReviewDoc ? `/reports/${reReviewDoc.id}` : "/dashboard"}
+            className="btn btn-secondary"
+          >
+            ← {reReviewDoc ? "Back to report" : "Back to dashboard"}
           </Link>
         </div>
 
         <div className="mx-auto max-w-[720px]">
           <div className={analyzing ? "opacity-60" : ""}>
-            <Dropzone onFile={handleFile} />
+            <Dropzone
+              onFile={handleFile}
+              accept={
+                reReviewDoc?.type === "pptx" ? ".pptx" : ".docx,.pptx"
+              }
+            />
           </div>
 
           {analyzing && filename ? (

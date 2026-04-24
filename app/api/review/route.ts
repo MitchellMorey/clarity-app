@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { analyzeDocx } from "@/lib/docx-analyzer";
+import { analyzePptx } from "@/lib/pptx-analyzer";
 
-// The analyzer uses JSZip + fast-xml-parser, both of which need Node runtime
+// Both analyzers use JSZip + fast-xml-parser, which need Node runtime
 // (the Edge runtime doesn't expose the full Buffer API JSZip relies on).
 export const runtime = "nodejs";
 // Keep uploads short and memory-bounded. The UI caps uploads at 50 MB, and
@@ -10,11 +11,17 @@ export const maxDuration = 30;
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
 
-const DOCX_MIME_TYPES = new Set([
+// Permissive MIME set — we mainly rely on file extension, but log anything
+// unusual for diagnostics.
+const ACCEPTED_MIME_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/msword", // some browsers report this; still try to parse
-  "application/octet-stream", // Safari sometimes sends this for drag-drops
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/msword",
+  "application/vnd.ms-powerpoint",
+  "application/octet-stream",
 ]);
+
+type Kind = "docx" | "pptx";
 
 export async function POST(req: NextRequest) {
   let form: FormData;
@@ -47,19 +54,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Accept based on extension primarily (most reliable), with MIME as a hint.
-  const filename = file.name || "document.docx";
-  if (!/\.docx$/i.test(filename)) {
+  const filename = file.name || "document";
+  const kind = inferKind(filename);
+  if (!kind) {
     return NextResponse.json(
-      { error: "Only .docx files are accepted by this endpoint." },
+      { error: "Only .docx and .pptx files are accepted by this endpoint." },
       { status: 415 },
     );
   }
-  if (file.type && !DOCX_MIME_TYPES.has(file.type)) {
-    // Not a hard fail — some OSes report odd MIME types — but log for
-    // diagnostics. We continue and let the analyzer decide.
+
+  if (file.type && !ACCEPTED_MIME_TYPES.has(file.type)) {
     // eslint-disable-next-line no-console
-    console.warn(`Unexpected MIME type for .docx upload: ${file.type}`);
+    console.warn(`Unexpected MIME type for ${kind} upload: ${file.type}`);
   }
 
   let buffer: ArrayBuffer;
@@ -73,9 +79,11 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const result = await analyzeDocx(buffer);
+    const result =
+      kind === "docx" ? await analyzeDocx(buffer) : await analyzePptx(buffer);
     return NextResponse.json({
       filename,
+      kind,
       size: file.size,
       sizeLabel: formatBytes(file.size),
       ...result,
@@ -87,6 +95,12 @@ export async function POST(req: NextRequest) {
       { status: 422 },
     );
   }
+}
+
+function inferKind(filename: string): Kind | null {
+  if (/\.docx$/i.test(filename)) return "docx";
+  if (/\.pptx$/i.test(filename)) return "pptx";
+  return null;
 }
 
 function formatBytes(bytes: number): string {
