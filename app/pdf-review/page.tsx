@@ -81,9 +81,9 @@ export default function PdfReviewUploadPage() {
               Review Adobe Accessibility Report
             </h1>
             <div className="mt-1 text-muted">
-              Upload your PDF and the Adobe accessibility report. Clarity will
-              turn each flagged rule into a plain-language fix you can apply in
-              the source file.
+              Upload your original PDF and the Adobe accessibility report.
+              Clarity will turn each flagged rule into a plain-language fix you
+              can apply in the source file.
             </div>
           </div>
           <Link href="/dashboard" className="btn btn-secondary">
@@ -111,8 +111,8 @@ export default function PdfReviewUploadPage() {
 
           <div className="mt-6 flex items-center justify-between gap-4 rounded-lg2 border border-border bg-surface px-6 py-5">
             <div className="text-[14px] text-muted">
-              Suggestions are tool-agnostic — describe the fix for the source
-              file, not for Acrobat remediation.
+              Generate plain-language fixes to the accessibility issues
+              identified by Adobe.
             </div>
             <button
               className="btn btn-primary"

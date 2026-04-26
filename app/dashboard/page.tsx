@@ -7,6 +7,11 @@ import { Topbar } from "@/components/Topbar";
 import { FileIcon } from "@/components/FileIcon";
 import { ScoreBar } from "@/components/ScoreBar";
 import { currentVersionOf, useApp } from "@/lib/store";
+import type { Document, PdfReview } from "@/lib/types";
+
+type ReviewRow =
+  | { kind: "doc"; uploadedAt: string; doc: Document }
+  | { kind: "pdf"; uploadedAt: string; review: PdfReview };
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -18,25 +23,6 @@ export default function DashboardPage() {
 
   const stats = useMemo(() => {
     const docCurrent = documents.map(currentVersionOf);
-    const docIssues = docCurrent.flatMap((v) => v.issues);
-    const openCritical =
-      docIssues.filter((i) => i.severity === "critical" && !i.resolved).length +
-      pdfReviews.flatMap((r) => r.findings).filter(
-        (f) => f.status === "failed" && !f.resolved,
-      ).length;
-    const resolved =
-      documents.reduce((sum, d) => {
-        if (d.versions.length < 2) return sum;
-        return (
-          sum +
-          d.versions[d.versions.length - 1].issues.filter((i) => i.resolved)
-            .length
-        );
-      }, 0) +
-      pdfReviews.reduce(
-        (sum, r) => sum + r.findings.filter((f) => f.resolved).length,
-        0,
-      );
     const allScores = [
       ...docCurrent.map((v) => v.score),
       ...pdfReviews.map((r) => r.score),
@@ -47,9 +33,26 @@ export default function DashboardPage() {
     return {
       reviewed: documents.length + pdfReviews.length,
       avg,
-      critical: openCritical,
-      resolved,
     };
+  }, [documents, pdfReviews]);
+
+  // Unified, most-recent-first list of every review (DOCX, PPTX, PDF) so the
+  // dashboard shows one coherent history regardless of which workflow produced
+  // each entry.
+  const reviewRows: ReviewRow[] = useMemo(() => {
+    const rows: ReviewRow[] = [
+      ...documents.map((d) => ({
+        kind: "doc" as const,
+        uploadedAt: d.uploadedAt,
+        doc: d,
+      })),
+      ...pdfReviews.map((r) => ({
+        kind: "pdf" as const,
+        uploadedAt: r.uploadedAt,
+        review: r,
+      })),
+    ];
+    return rows.sort((a, b) => (a.uploadedAt < b.uploadedAt ? 1 : -1));
   }, [documents, pdfReviews]);
 
   if (!hydrated) return null;
@@ -80,21 +83,19 @@ export default function DashboardPage() {
             title="Review Document Accessibility"
             body="Upload a DOCX or PPTX. Clarity walks every paragraph or slide and flags contrast, font size, alt text, and heading issues you can fix in the source file."
             cta="Start a document review"
-            accent="primary"
           />
           <CtaCard
             href="/pdf-review"
             eyebrow="PDF + Adobe report"
             title="Review Adobe Accessibility Report"
-            body="Upload your PDF and the Adobe accessibility report. Clarity turns each flagged rule into a plain-language fix you can apply in the source file — before re-exporting."
-            cta="Start a PDF review"
-            accent="secondary"
+            body="Upload your original PDF and the Adobe accessibility report. Clarity turns each flagged rule into a plain-language fix you can apply in the source file — before re-exporting."
+            cta="Review an accessibility report"
           />
         </div>
 
         {!isEmpty ? (
           <>
-            <div className="mb-7 grid grid-cols-2 gap-4 md:grid-cols-4">
+            <div className="mb-7 grid grid-cols-2 gap-4">
               <StatCard
                 label="Reviews completed"
                 value={stats.reviewed}
@@ -105,146 +106,28 @@ export default function DashboardPage() {
                 value={stats.avg}
                 trend="Out of 100"
               />
-              <StatCard
-                label="Critical issues open"
-                value={stats.critical}
-                trend="Need immediate attention"
-              />
-              <StatCard
-                label="Issues resolved"
-                value={stats.resolved}
-                trend="From re-reviews + check-offs"
-              />
             </div>
 
-            {documents.length > 0 ? (
-              <section className="mb-8">
-                <div className="mb-3.5 flex items-center justify-between">
-                  <h2 className="m-0 text-[16px] font-semibold">
-                    Document reviews
-                  </h2>
-                  <span className="text-[13px] text-muted">
-                    Click a row to open the report
-                  </span>
-                </div>
+            <section className="mb-8">
+              <div className="mb-3.5 flex items-center justify-between">
+                <h2 className="m-0 text-[16px] font-semibold">
+                  Your reviews
+                </h2>
+                <span className="text-[13px] text-muted">
+                  Click a row to open the report
+                </span>
+              </div>
 
-                <div className="grid gap-3">
-                  {documents.map((doc) => {
-                    const v = currentVersionOf(doc);
-                    const open = v.issues.filter((i) => !i.resolved).length;
-                    const crit = v.issues.filter(
-                      (i) => i.severity === "critical" && !i.resolved,
-                    ).length;
-                    const versionLabel =
-                      doc.versions.length > 1 ? ` · v${doc.versions.length}` : "";
-                    return (
-                      <Link
-                        key={doc.id}
-                        href={`/reports/${doc.id}`}
-                        className="grid grid-cols-[40px_1.8fr_1fr_1fr_140px] items-center gap-4 rounded-card border border-border bg-surface px-5 py-4 transition hover:border-border-strong hover:shadow-soft-sm"
-                      >
-                        <FileIcon type={doc.type} />
-                        <div>
-                          <div className="font-medium">{doc.name}</div>
-                          <div className="mt-0.5 text-[13px] text-subtle">
-                            {doc.size} · Reviewed {v.reviewedAt}
-                            {versionLabel}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-[12.5px] text-subtle">Issues</div>
-                          <div className="text-[14px]">
-                            {open} open
-                            {crit > 0 ? (
-                              <span className="text-error">
-                                {" "}· {crit} critical
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 tabular-nums">
-                          <ScoreBar score={v.score} />
-                          <span>{v.score}</span>
-                        </div>
-                        <div className="flex justify-end">
-                          <span className="btn btn-secondary btn-sm">
-                            View report
-                          </span>
-                        </div>
-                      </Link>
-                    );
-                  })}
-                </div>
-              </section>
-            ) : null}
-
-            {pdfReviews.length > 0 ? (
-              <section className="mb-8">
-                <div className="mb-3.5 flex items-center justify-between">
-                  <h2 className="m-0 text-[16px] font-semibold">
-                    Adobe PDF reviews
-                  </h2>
-                  <span className="text-[13px] text-muted">
-                    Plain-language fix suggestions per rule
-                  </span>
-                </div>
-
-                <div className="grid gap-3">
-                  {pdfReviews.map((r) => {
-                    const failed = r.findings.filter(
-                      (f) => f.status === "failed" && !f.resolved,
-                    ).length;
-                    const manual = r.findings.filter(
-                      (f) => f.status === "needs-check" && !f.resolved,
-                    ).length;
-                    return (
-                      <Link
-                        key={r.id}
-                        href={`/pdf-reports/${r.id}`}
-                        className="grid grid-cols-[40px_1.8fr_1fr_1fr_140px] items-center gap-4 rounded-card border border-border bg-surface px-5 py-4 transition hover:border-border-strong hover:shadow-soft-sm"
-                      >
-                        <div className="grid h-10 w-10 place-items-center rounded-lg2 bg-accent-soft text-[13px] font-semibold text-accent">
-                          PDF
-                        </div>
-                        <div>
-                          <div className="font-medium">{r.pdfName}</div>
-                          <div className="mt-0.5 text-[13px] text-subtle">
-                            {r.pdfSize} · Report: {r.reportName} · Reviewed{" "}
-                            {r.uploadedAt}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-[12.5px] text-subtle">
-                            Findings
-                          </div>
-                          <div className="text-[14px]">
-                            {failed > 0 ? (
-                              <span className="text-error">{failed} failed</span>
-                            ) : (
-                              <span>No failures</span>
-                            )}
-                            {manual > 0 ? (
-                              <span className="text-warn">
-                                {" "}· {manual} manual
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 tabular-nums">
-                          <ScoreBar score={r.score} />
-                          <span>{r.score}</span>
-                        </div>
-                        <div className="flex justify-end">
-                          <span className="btn btn-secondary btn-sm">
-                            View suggestions
-                          </span>
-                        </div>
-                      </Link>
-                    );
-                  })}
-                </div>
-              </section>
-            ) : null}
+              <div className="grid gap-3">
+                {reviewRows.map((row) =>
+                  row.kind === "doc" ? (
+                    <DocReviewRow key={row.doc.id} doc={row.doc} />
+                  ) : (
+                    <PdfReviewRow key={row.review.id} review={row.review} />
+                  ),
+                )}
+              </div>
+            </section>
           </>
         ) : null}
       </main>
@@ -258,14 +141,12 @@ function CtaCard({
   title,
   body,
   cta,
-  accent,
 }: {
   href: string;
   eyebrow: string;
   title: string;
   body: string;
   cta: string;
-  accent: "primary" | "secondary";
 }) {
   return (
     <Link
@@ -282,11 +163,98 @@ function CtaCard({
         <p className="mt-2 text-[14.5px] text-muted">{body}</p>
       </div>
       <div className="mt-5">
-        <span
-          className={`btn ${accent === "primary" ? "btn-primary" : "btn-secondary"}`}
-        >
-          {cta} →
-        </span>
+        <span className="btn btn-primary">{cta} →</span>
+      </div>
+    </Link>
+  );
+}
+
+function DocReviewRow({ doc }: { doc: Document }) {
+  const v = currentVersionOf(doc);
+  const open = v.issues.filter((i) => !i.resolved).length;
+  const crit = v.issues.filter(
+    (i) => i.severity === "critical" && !i.resolved,
+  ).length;
+  const resolved = v.issues.filter((i) => i.resolved).length;
+  const versionLabel =
+    doc.versions.length > 1 ? ` · v${doc.versions.length}` : "";
+  return (
+    <Link
+      href={`/reports/${doc.id}`}
+      className="grid grid-cols-[40px_1.8fr_1fr_1fr_140px] items-center gap-4 rounded-card border border-border bg-surface px-5 py-4 transition hover:border-border-strong hover:shadow-soft-sm"
+    >
+      <FileIcon type={doc.type} />
+      <div>
+        <div className="font-medium">{doc.name}</div>
+        <div className="mt-0.5 text-[13px] text-subtle">
+          {doc.size} · Reviewed {v.reviewedAt}
+          {versionLabel}
+        </div>
+      </div>
+      <div>
+        <div className="text-[12.5px] text-subtle">Issues</div>
+        <div className="text-[14px]">
+          {open} open
+          {crit > 0 ? (
+            <span className="text-error"> · {crit} critical</span>
+          ) : null}
+          {resolved > 0 ? (
+            <span className="text-success"> · {resolved} resolved</span>
+          ) : null}
+        </div>
+      </div>
+      <div className="flex items-center gap-2 tabular-nums">
+        <ScoreBar score={v.score} />
+        <span>{v.score}</span>
+      </div>
+      <div className="flex justify-end">
+        <span className="btn btn-secondary btn-sm">View report</span>
+      </div>
+    </Link>
+  );
+}
+
+function PdfReviewRow({ review }: { review: PdfReview }) {
+  const open = review.findings.filter(
+    (f) => !f.resolved && (f.status === "failed" || f.status === "needs-check"),
+  ).length;
+  const failed = review.findings.filter(
+    (f) => f.status === "failed" && !f.resolved,
+  ).length;
+  const resolved = review.findings.filter((f) => f.resolved).length;
+  return (
+    <Link
+      href={`/pdf-reports/${review.id}`}
+      className="grid grid-cols-[40px_1.8fr_1fr_1fr_140px] items-center gap-4 rounded-card border border-border bg-surface px-5 py-4 transition hover:border-border-strong hover:shadow-soft-sm"
+    >
+      <div className="grid h-10 w-10 place-items-center rounded-lg2 bg-accent-soft text-[13px] font-semibold text-accent">
+        PDF
+      </div>
+      <div>
+        <div className="font-medium">{review.pdfName}</div>
+        <div className="mt-0.5 text-[13px] text-subtle">
+          {review.pdfSize} · Report: {review.reportName} · Reviewed{" "}
+          {review.uploadedAt}
+        </div>
+      </div>
+      <div>
+        <div className="text-[12.5px] text-subtle">Issues</div>
+        <div className="text-[14px]">
+          {open} open
+          {failed > 0 ? (
+            <span className="text-error"> · {failed} critical</span>
+          ) : null}
+          {resolved > 0 ? (
+            <span className="text-success"> · {resolved} resolved</span>
+          ) : null}
+        </div>
+      </div>
+      <div className="flex items-center gap-2 tabular-nums">
+        <ScoreBar score={review.score} />
+        <span>{review.score}</span>
+      </div>
+      <div className="flex justify-end">
+        <span className="btn btn-secondary btn-sm">View report</span>
       </div>
     </Link>
   );
