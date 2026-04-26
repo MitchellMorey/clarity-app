@@ -47,6 +47,35 @@ export function Topbar() {
 function UploadMenu() {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Hover-close delay: gives the user time to move from the trigger down
+  // into the menu without it vanishing under their cursor. Re-entering
+  // the wrapper cancels the pending close.
+  const HOVER_CLOSE_DELAY_MS = 250;
+
+  const cancelClose = () => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  };
+
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimerRef.current = setTimeout(() => {
+      setOpen(false);
+      closeTimerRef.current = null;
+    }, HOVER_CLOSE_DELAY_MS);
+  };
+
+  const openNow = () => {
+    cancelClose();
+    setOpen(true);
+  };
+
+  // Cleanup any pending timer on unmount.
+  useEffect(() => () => cancelClose(), []);
 
   // Click outside / Esc to close — hover open is the primary affordance, but
   // these handle the case where someone clicks the trigger or tabs in.
@@ -54,10 +83,16 @@ function UploadMenu() {
     if (!open) return;
     const onPointer = (e: PointerEvent) => {
       if (!wrapperRef.current) return;
-      if (!wrapperRef.current.contains(e.target as Node)) setOpen(false);
+      if (!wrapperRef.current.contains(e.target as Node)) {
+        cancelClose();
+        setOpen(false);
+      }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        cancelClose();
+        setOpen(false);
+      }
     };
     window.addEventListener("pointerdown", onPointer);
     window.addEventListener("keydown", onKey);
@@ -71,13 +106,16 @@ function UploadMenu() {
     <div
       ref={wrapperRef}
       className="relative"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocus={() => setOpen(true)}
+      onMouseEnter={openNow}
+      onMouseLeave={scheduleClose}
+      onFocus={openNow}
       onBlur={(e) => {
         // Only close if focus actually leaves the menu (not when moving
         // between trigger and items).
-        if (!e.currentTarget.contains(e.relatedTarget as Node)) setOpen(false);
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          cancelClose();
+          setOpen(false);
+        }
       }}
     >
       <button
@@ -108,13 +146,21 @@ function UploadMenu() {
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-full z-20 mt-1 w-[260px] overflow-hidden rounded-card border border-border bg-surface shadow-soft-md"
+          // pt-1 + -mt-1 keeps the dropdown visually offset from the trigger
+          // while preserving an unbroken hoverable surface from button → menu,
+          // so the cursor never crosses dead space that would trigger close.
+          className="absolute right-0 top-full z-20 -mt-1 w-[260px] overflow-hidden rounded-card border border-border bg-surface pt-1 shadow-soft-md"
+          onMouseEnter={openNow}
+          onMouseLeave={scheduleClose}
         >
           <Link
             role="menuitem"
             href="/upload"
             className="block px-4 py-3 text-[13.5px] text-text hover:bg-surface-alt"
-            onClick={() => setOpen(false)}
+            onClick={() => {
+              cancelClose();
+              setOpen(false);
+            }}
           >
             <div className="font-semibold">Review a new document</div>
             <div className="mt-0.5 text-[12.5px] text-muted">
@@ -125,7 +171,10 @@ function UploadMenu() {
             role="menuitem"
             href="/pdf-review"
             className="block border-t border-border px-4 py-3 text-[13.5px] text-text hover:bg-surface-alt"
-            onClick={() => setOpen(false)}
+            onClick={() => {
+              cancelClose();
+              setOpen(false);
+            }}
           >
             <div className="font-semibold">Review an accessibility report</div>
             <div className="mt-0.5 text-[12.5px] text-muted">
