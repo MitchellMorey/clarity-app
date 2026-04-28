@@ -100,6 +100,50 @@ export const SEVERITY_ORDER: Record<IssueSeverity, number> = {
  */
 export type PdfRuleStatus = "failed" | "needs-check" | "passed" | "not-applicable";
 
+/**
+ * Where a finding originated.
+ *  - "adobe":   came from parsing the Adobe accessibility report.
+ *  - "clarity": Clarity scanned the PDF directly and found something Adobe
+ *               either missed entirely (e.g. tiny font) or only flags for
+ *               manual review (e.g. color contrast).
+ */
+export type PdfFindingSource = "adobe" | "clarity";
+
+/**
+ * A specific instance behind a finding — used to tell the user *which*
+ * text/image triggered the rule. For text-based issues we keep enough of
+ * the offending content + its formatting to render a faithful preview.
+ */
+export type PdfEvidenceKind = "text" | "image";
+
+export interface PdfEvidence {
+  id: string;
+  kind: PdfEvidenceKind;
+  /** 1-indexed page number where this evidence was found. */
+  page: number;
+  /** Text snippet (only present when kind === "text"). */
+  text?: string;
+  /** Detected font size in points, when available. */
+  fontSize?: number;
+  /** Detected font family, when known. */
+  fontFamily?: string;
+  /** Hex foreground color (#rrggbb), when known. */
+  fg?: string;
+  /** Hex background color (#rrggbb). Defaults to white when not detected. */
+  bg?: string;
+  /** Computed contrast ratio formatted like "2.4:1". */
+  ratio?: string;
+  /** Required minimum ratio formatted like "4.5:1". */
+  required?: string;
+  /** Free-form detail like "Current: 1pt · Recommended: 9pt+". */
+  detail?: string;
+  /**
+   * For image evidence: a human label like "Image 2" or the figure's
+   * resource name. Used as the row's primary identifier.
+   */
+  imageLabel?: string;
+}
+
 export interface PdfFinding {
   id: string;
   /** Broad category from the Adobe report, e.g. "Document", "Page content" */
@@ -117,6 +161,14 @@ export interface PdfFinding {
   suggestion: string;
   /** Whether the user has marked this finding as resolved (UI state). */
   resolved: boolean;
+  /** Whether Adobe's report or Clarity's source-side scan surfaced this. */
+  source: PdfFindingSource;
+  /**
+   * Concrete instances behind the finding. For Adobe failures this is what
+   * Clarity could find by cross-checking the source PDF; for Clarity findings
+   * this is the actual list of offenders Clarity detected.
+   */
+  evidence?: PdfEvidence[];
 }
 
 export interface PdfReview {

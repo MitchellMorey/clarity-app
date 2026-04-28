@@ -5,8 +5,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Topbar } from "@/components/Topbar";
 import { ScoreBar } from "@/components/ScoreBar";
+import { PdfPreview } from "@/components/PdfPreview";
 import { useApp } from "@/lib/store";
-import type { PdfFinding, PdfRuleStatus } from "@/lib/types";
+import type {
+  PdfFinding,
+  PdfFindingSource,
+  PdfRuleStatus,
+} from "@/lib/types";
 
 type Filter = "all" | "failed" | "needs-check" | "passed" | "resolved";
 
@@ -247,6 +252,13 @@ function FindingRow({
   finding: PdfFinding;
   onToggle: () => void;
 }) {
+  const evidence = finding.evidence ?? [];
+  // Treat older saved reviews (no source field) as Adobe-sourced — they
+  // were all from the Adobe report parse before this feature shipped.
+  const source: PdfFindingSource = finding.source ?? "adobe";
+  const descriptionPrefix =
+    source === "clarity" ? "Clarity says:" : "Adobe says:";
+
   return (
     <li className="flex items-start gap-4 border-b border-border px-5 py-4 last:border-b-0">
       <div className="mt-0.5 flex-shrink-0">
@@ -255,14 +267,17 @@ function FindingRow({
       <div className="flex-1">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h4
-              className={`m-0 text-[15px] font-semibold ${finding.resolved ? "text-muted line-through" : ""}`}
-            >
-              {finding.rule}
-            </h4>
+            <div className="flex flex-wrap items-center gap-2">
+              <h4
+                className={`m-0 text-[15px] font-semibold ${finding.resolved ? "text-muted line-through" : ""}`}
+              >
+                {finding.rule}
+              </h4>
+              <SourceBadge source={source} />
+            </div>
             {finding.description ? (
               <div className="mt-0.5 text-[13px] text-muted">
-                Adobe says: {finding.description}
+                {descriptionPrefix} {finding.description}
               </div>
             ) : null}
           </div>
@@ -274,6 +289,20 @@ function FindingRow({
             {finding.resolved ? "Mark open" : "Mark resolved"}
           </button>
         </div>
+        {evidence.length > 0 ? (
+          <div className="mt-3">
+            <div className="text-[11.5px] font-semibold uppercase tracking-wider text-subtle">
+              {evidence.length === 1
+                ? "Where Clarity found this in the PDF"
+                : `Where Clarity found this in the PDF (${evidence.length} instance${evidence.length === 1 ? "" : "s"})`}
+            </div>
+            <div className="mt-1 space-y-2">
+              {evidence.map((ev) => (
+                <PdfPreview key={ev.id} evidence={ev} />
+              ))}
+            </div>
+          </div>
+        ) : null}
         <div className="mt-3 rounded-card border border-accent-soft bg-accent-soft px-4 py-3 text-[13.5px] text-text">
           <div className="text-[11.5px] font-semibold uppercase tracking-wider text-accent">
             How to fix in the source file
@@ -282,6 +311,26 @@ function FindingRow({
         </div>
       </div>
     </li>
+  );
+}
+
+function SourceBadge({ source }: { source: PdfFindingSource }) {
+  const isAdobe = source === "adobe";
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide ${
+        isAdobe
+          ? "bg-info-soft text-info"
+          : "bg-accent-soft text-accent-hover"
+      }`}
+      title={
+        isAdobe
+          ? "Surfaced by the Adobe accessibility report"
+          : "Surfaced by Clarity's source-side scan of the PDF"
+      }
+    >
+      {isAdobe ? "Adobe" : "Clarity"}
+    </span>
   );
 }
 
