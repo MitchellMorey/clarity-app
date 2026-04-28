@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Topbar } from "@/components/Topbar";
 import { ScoreBar } from "@/components/ScoreBar";
-import { PdfPreview } from "@/components/PdfPreview";
+import { PdfPreview, PdfPreviewBox } from "@/components/PdfPreview";
 import { useApp } from "@/lib/store";
 import type {
   PdfFinding,
@@ -26,8 +26,6 @@ export default function PdfReportPage({
     hydrated,
     pdfReviews,
     togglePdfFindingResolved,
-    deletePdfReview,
-    pushToast,
   } = useApp();
 
   const [filter, setFilter] = useState<Filter>("failed");
@@ -138,28 +136,6 @@ export default function PdfReportPage({
                   {review.uploadedAt}
                 </div>
               </div>
-            </div>
-            <div className="flex gap-2">
-              <button
-                className="btn btn-secondary"
-                onClick={() => {
-                  if (
-                    typeof window !== "undefined" &&
-                    window.confirm(
-                      "Delete this PDF review? The suggestions will be gone.",
-                    )
-                  ) {
-                    deletePdfReview(review.id);
-                    pushToast("PDF review deleted");
-                    router.push("/dashboard");
-                  }
-                }}
-              >
-                Delete review
-              </button>
-              <Link href="/pdf-review" className="btn btn-primary">
-                New PDF review
-              </Link>
             </div>
           </div>
 
@@ -291,16 +267,11 @@ function FindingRow({
         </div>
         {evidence.length > 0 ? (
           <div className="mt-3">
-            <div className="text-[11.5px] font-semibold uppercase tracking-wider text-subtle">
-              {evidence.length === 1
-                ? "Where Clarity found this in the PDF"
-                : `Where Clarity found this in the PDF (${evidence.length} instance${evidence.length === 1 ? "" : "s"})`}
-            </div>
-            <div className="mt-1 space-y-2">
+            <PdfPreviewBox count={evidence.length}>
               {evidence.map((ev) => (
                 <PdfPreview key={ev.id} evidence={ev} />
               ))}
-            </div>
+            </PdfPreviewBox>
           </div>
         ) : null}
         <div className="mt-3 rounded-card border border-accent-soft bg-accent-soft px-4 py-3 text-[13.5px] text-text">

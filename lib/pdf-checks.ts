@@ -43,46 +43,43 @@ export function runPdfChecks(content: PdfContent): PdfCheckResults {
 
 function checkContrast(runs: PdfTextRun[]): PdfEvidence[] {
   const out: PdfEvidence[] = [];
-  // Group by (page, color, fontSize, fontFamily) and emit one evidence row
-  // per unique problem so a paragraph rendered as 100 separate Tj calls
-  // doesn't spam the report.
-  const seen = new Map<string, PdfEvidence>();
-
+  // The analyzer already groups consecutive same-formatting Tj calls into
+  // a single run, so each run we see here is a distinct logical block.
+  // We emit one evidence row per failing run — multiple paragraphs with
+  // the same color show up as separate previews instead of being
+  // joined into a confusing run-on line.
   for (const run of runs) {
     if (!run.text) continue;
     const ratio = contrastRatio(run.color, "#ffffff");
-    const required = isLargeText(run.fontSize) ? CONTRAST_AA_LARGE : CONTRAST_AA_NORMAL;
+    const required = isLargeText(run.fontSize)
+      ? CONTRAST_AA_LARGE
+      : CONTRAST_AA_NORMAL;
     if (ratio >= required) continue;
-    // Skip black-on-white-ish text — even slightly off-pure black still has
-    // ratio well above 4.5; only flag genuine low-contrast issues.
+    // Pure-black-on-white text usually clears the threshold. Skip anything
+    // already comfortably above 7:1 (AAA threshold) — the user doesn't need
+    // to see those.
     if (ratio >= 7) continue;
 
-    const key = `${run.page}|${run.color}|${run.fontSize}|${run.fontFamily ?? ""}`;
-    const existing = seen.get(key);
-    if (existing) {
-      // Concatenate up to ~120 chars so the preview stays readable.
-      if (existing.text && existing.text.length < 120 && run.text.length > 0) {
-        existing.text = `${existing.text} ${run.text}`.slice(0, 160);
-      }
-      continue;
-    }
-    const ev: PdfEvidence = {
+    out.push({
       id: `clarity_contrast_${out.length + 1}`,
       kind: "text",
       page: run.page,
-      text: run.text.slice(0, 160),
+      text: trimSnippet(run.text),
       fontSize: run.fontSize,
       fontFamily: run.fontFamily,
       fg: run.color,
       bg: "#ffffff",
       ratio: `${ratio.toFixed(2)}:1`,
       required: `${required.toFixed(1)}:1`,
-    };
-    seen.set(key, ev);
-    out.push(ev);
+    });
   }
-
   return out;
+}
+
+/** Cap a text snippet so a single huge block doesn't dominate the UI. */
+function trimSnippet(text: string): string {
+  if (text.length <= 220) return text;
+  return text.slice(0, 217).trimEnd() + "…";
 }
 
 function isLargeText(sizePt: number): boolean {
@@ -116,10 +113,9 @@ function checkFontSize(
 ): { fontEvidence: PdfEvidence[]; fontHasCritical: boolean } {
   const out: PdfEvidence[] = [];
   let critical = false;
-  // Bucket by (page, size, color, family) so identical small-text instances
-  // don't each produce their own row.
-  const seen = new Map<string, PdfEvidence>();
-
+  // Each run from the analyzer is a distinct logical block, so we emit
+  // one evidence row per failing block — separate paragraphs at the same
+  // tiny size still get separate previews.
   for (const run of runs) {
     if (!run.text) continue;
     if (run.fontSize >= FONT_WARNING_BELOW) continue;
@@ -127,28 +123,17 @@ function checkFontSize(
 
     if (run.fontSize < FONT_CRITICAL_BELOW) critical = true;
 
-    const sizeBucket = run.fontSize.toFixed(1);
-    const key = `${run.page}|${sizeBucket}|${run.color}|${run.fontFamily ?? ""}`;
-    const existing = seen.get(key);
-    if (existing) {
-      if (existing.text && existing.text.length < 120 && run.text.length > 0) {
-        existing.text = `${existing.text} ${run.text}`.slice(0, 160);
-      }
-      continue;
-    }
-    const ev: PdfEvidence = {
+    out.push({
       id: `clarity_font_${out.length + 1}`,
       kind: "text",
       page: run.page,
-      text: run.text.slice(0, 160),
+      text: trimSnippet(run.text),
       fontSize: run.fontSize,
       fontFamily: run.fontFamily,
       fg: run.color,
       bg: "#ffffff",
       detail: `Current: ${formatPt(run.fontSize)} · Recommended: ${FONT_WARNING_BELOW}pt+`,
-    };
-    seen.set(key, ev);
-    out.push(ev);
+    });
   }
 
   return { fontEvidence: out, fontHasCritical: critical };
@@ -173,6 +158,9 @@ function checkFigures(
     detail: f.page
       ? `Figure ${f.index} on page ${f.page} has no alt text.`
       : `Figure ${f.index} has no alt text.`,
+    imageDataUri: f.imageDataUri,
+    imageWidth: f.imageWidth,
+    imageHeight: f.imageHeight,
   }));
   return {
     altEvidence: evidence,

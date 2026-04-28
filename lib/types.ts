@@ -142,6 +142,15 @@ export interface PdfEvidence {
    * resource name. Used as the row's primary identifier.
    */
   imageLabel?: string;
+  /**
+   * For image evidence: a base64 data URI of the actual image bytes
+   * extracted from the PDF (when the image is in a browser-renderable
+   * format and small enough to inline). Lets the user see exactly which
+   * picture in their source needs alt text.
+   */
+  imageDataUri?: string;
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
 export interface PdfFinding {

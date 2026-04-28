@@ -48,7 +48,20 @@ export interface PdfFigureMeta {
   alt?: string;
   /** Document-order index of this figure (1-based) for labeling. */
   index: number;
+  /**
+   * Inline preview of the figure's image, when we can extract one. We pair
+   * figures with image XObjects by document order and only inline formats
+   * that browsers can render natively (DCTDecode → JPEG, JPXDecode → JP2).
+   * Falls back to undefined for images stored in raw pixel streams or for
+   * images larger than the inline cap (so localStorage doesn't blow up).
+   */
+  imageDataUri?: string;
+  imageWidth?: number;
+  imageHeight?: number;
 }
+
+/** Cap on inline-encoded image bytes (per image) to keep localStorage sane. */
+const MAX_INLINE_IMAGE_BYTES = 220 * 1024;
 
 export interface PdfContent {
   runs: PdfTextRun[];
@@ -359,9 +372,32 @@ function multiplyMatrix(
 }
 
 /**
- * Walk a content stream and emit one PdfTextRun per text-showing operator.
- * Page-level operations like graphics state save/restore are tracked with a
- * simple stack so per-block formatting doesn't bleed across blocks.
+ * A "logical text block" we accumulate while walking the content stream.
+ *
+ * We emit one PdfTextRun per block. Continuous Tj/TJ calls within the same
+ * line and same formatting are merged (kerning is often expressed by
+ * splitting a single visual word across multiple Tj operators, so merging
+ * is what users would expect to see). We flush + start a new block on:
+ *   - any positioning operator that moves to a new line (Td, TD, T-star,
+ *     Tm, single-quote, double-quote)
+ *   - any formatting change (Tf, rg, g, k, sc, scn)
+ *   - BT/ET boundaries and graphics state save/restore (q/Q)
+ *
+ * That way two adjacent paragraphs that share size/color produce two
+ * separate evidence rows instead of being joined into one merged preview.
+ */
+interface PendingBlock {
+  text: string;
+  fontSize: number;
+  color: string;
+  fontResource: string | null;
+  page: number;
+}
+
+/**
+ * Walk a content stream and emit one PdfTextRun per logical text block.
+ * Same-line/same-format Tj sequences are merged; positioning or formatting
+ * changes flush the current block before starting a new one.
  */
 function walkContentStream(
   content: string,
@@ -371,6 +407,24 @@ function walkContentStream(
   const runs: PdfTextRun[] = [];
   const stateStack: GraphicsState[] = [];
   let state = newState();
+  let pending: PendingBlock | null = null;
+
+  const flush = () => {
+    if (!pending) return;
+    if (pending.text && /\S/.test(pending.text)) {
+      const fontFamily = pending.fontResource
+        ? fontMap.get(pending.fontResource)
+        : undefined;
+      runs.push({
+        text: collapseWs(pending.text),
+        fontSize: round1(pending.fontSize),
+        color: pending.color,
+        page: pending.page,
+        fontFamily,
+      });
+    }
+    pending = null;
+  };
 
   // Tokenize into a flat list of operators with their operands. We keep a
   // simple linear scanner since content streams are operand-prefix RPN.
@@ -378,6 +432,31 @@ function walkContentStream(
 
   let inText = false;
   const operands: string[] = [];
+
+  const appendText = (raw: string) => {
+    if (!raw) return;
+    if (!inText) return;
+    const effective = effectiveSize(state);
+    const color = rgbToHex(state.fillRgb);
+    if (
+      pending &&
+      pending.fontSize === effective &&
+      pending.color === color &&
+      pending.fontResource === state.fontResource &&
+      pending.page === page
+    ) {
+      pending.text += raw;
+      return;
+    }
+    flush();
+    pending = {
+      text: raw,
+      fontSize: effective,
+      color,
+      fontResource: state.fontResource,
+      page,
+    };
+  };
 
   for (const tok of tokens) {
     if (tok.startsWith("(") || tok.startsWith("<") || tok.startsWith("[")) {
@@ -395,25 +474,30 @@ function walkContentStream(
     // Operator
     switch (tok) {
       case "q":
+        flush();
         stateStack.push(cloneState(state));
         break;
       case "Q":
+        flush();
         if (stateStack.length > 0) {
           state = stateStack.pop() as GraphicsState;
         }
         break;
       case "cm": {
         if (operands.length >= 6) {
+          flush();
           const m = popMatrix(operands);
           state.cm = multiplyMatrix(m, state.cm);
         }
         break;
       }
       case "BT":
+        flush();
         inText = true;
         state.tm = [...IDENTITY] as GraphicsState["tm"];
         break;
       case "ET":
+        flush();
         inText = false;
         break;
       case "Tf": {
@@ -421,15 +505,25 @@ function walkContentStream(
         if (operands.length >= 2) {
           const size = parseFloat(operands[operands.length - 1]);
           const name = operands[operands.length - 2];
-          if (!Number.isNaN(size)) state.fontSize = size;
-          if (typeof name === "string" && name.startsWith("/")) {
-            state.fontResource = name.slice(1);
+          const newName =
+            typeof name === "string" && name.startsWith("/")
+              ? name.slice(1)
+              : state.fontResource;
+          if (
+            (Number.isNaN(size) ? state.fontSize : size) !== state.fontSize ||
+            newName !== state.fontResource
+          ) {
+            flush();
           }
+          if (!Number.isNaN(size)) state.fontSize = size;
+          if (newName !== null) state.fontResource = newName;
         }
         break;
       }
       case "Tm": {
         if (operands.length >= 6) {
+          // New text matrix → effectively a new line / position.
+          flush();
           state.tm = popMatrix(operands);
         }
         break;
@@ -437,75 +531,93 @@ function walkContentStream(
       case "Td":
       case "TD":
       case "T*":
-        // Translation only; doesn't affect font scale.
+        // Move to a new line — flush so the next text becomes a new block.
+        flush();
         break;
       case "rg": {
-        // Three operands: r g b in 0..1
         if (operands.length >= 3) {
           const b = parseFloat(operands[operands.length - 1]);
           const g = parseFloat(operands[operands.length - 2]);
           const r = parseFloat(operands[operands.length - 3]);
-          state.fillRgb = [
+          const next: [number, number, number] = [
             isFinite(r) ? r : 0,
             isFinite(g) ? g : 0,
             isFinite(b) ? b : 0,
           ];
+          if (!sameRgb(state.fillRgb, next)) flush();
+          state.fillRgb = next;
         }
         break;
       }
       case "g": {
-        // One operand: gray 0..1 → expand to rgb
         if (operands.length >= 1) {
           const gv = parseFloat(operands[operands.length - 1]);
           const v = isFinite(gv) ? gv : 0;
-          state.fillRgb = [v, v, v];
+          const next: [number, number, number] = [v, v, v];
+          if (!sameRgb(state.fillRgb, next)) flush();
+          state.fillRgb = next;
         }
         break;
       }
       case "k": {
-        // CMYK fill: c m y k → naive conversion to RGB.
         if (operands.length >= 4) {
           const k = clamp01(parseFloat(operands[operands.length - 1]));
           const y = clamp01(parseFloat(operands[operands.length - 2]));
           const mg = clamp01(parseFloat(operands[operands.length - 3]));
           const c = clamp01(parseFloat(operands[operands.length - 4]));
-          state.fillRgb = [
+          const next: [number, number, number] = [
             (1 - c) * (1 - k),
             (1 - mg) * (1 - k),
             (1 - y) * (1 - k),
           ];
+          if (!sameRgb(state.fillRgb, next)) flush();
+          state.fillRgb = next;
         }
         break;
       }
       case "sc":
       case "scn": {
-        // Treat as RGB if 3 numeric operands; gray if 1; ignore otherwise.
         const nums = operands
           .map((o) => parseFloat(o))
           .filter((n) => !Number.isNaN(n));
+        let next: [number, number, number] | null = null;
         if (nums.length >= 3) {
-          state.fillRgb = [
+          next = [
             clamp01(nums[nums.length - 3]),
             clamp01(nums[nums.length - 2]),
             clamp01(nums[nums.length - 1]),
           ];
         } else if (nums.length === 1) {
           const v = clamp01(nums[0]);
-          state.fillRgb = [v, v, v];
+          next = [v, v, v];
+        }
+        if (next) {
+          if (!sameRgb(state.fillRgb, next)) flush();
+          state.fillRgb = next;
         }
         break;
       }
-      case "Tj":
-      case "'":
-      case '"': {
+      case "Tj": {
         if (!inText) break;
         const last = operands[operands.length - 1];
         if (typeof last === "string" && last.startsWith("(")) {
-          const text = decodePdfString(last.slice(1, -1));
-          emitRun(runs, text, state, page, fontMap);
+          appendText(decodePdfString(last.slice(1, -1)));
         } else if (typeof last === "string" && last.startsWith("<")) {
-          const text = decodeHexString(last.slice(1, -1));
-          emitRun(runs, text, state, page, fontMap);
+          appendText(decodeHexString(last.slice(1, -1)));
+        }
+        break;
+      }
+      case "'":
+      case '"': {
+        // The ' and " operators move to a new line *and* show text — flush
+        // first so the new line becomes its own block.
+        if (!inText) break;
+        flush();
+        const last = operands[operands.length - 1];
+        if (typeof last === "string" && last.startsWith("(")) {
+          appendText(decodePdfString(last.slice(1, -1)));
+        } else if (typeof last === "string" && last.startsWith("<")) {
+          appendText(decodeHexString(last.slice(1, -1)));
         }
         break;
       }
@@ -513,8 +625,7 @@ function walkContentStream(
         if (!inText) break;
         const last = operands[operands.length - 1];
         if (typeof last === "string" && last.startsWith("[")) {
-          const text = collectArrayTjText(last);
-          emitRun(runs, text, state, page, fontMap);
+          appendText(collectArrayTjText(last));
         }
         break;
       }
@@ -525,7 +636,22 @@ function walkContentStream(
     operands.length = 0;
   }
 
+  flush();
   return runs;
+}
+
+function effectiveSize(state: GraphicsState): number {
+  const tmScale = Math.sqrt(Math.abs(state.tm[0] * state.tm[3])) || 1;
+  const cmScale = Math.sqrt(Math.abs(state.cm[0] * state.cm[3])) || 1;
+  const eff = state.fontSize * tmScale * cmScale;
+  return isFinite(eff) && eff > 0 ? eff : state.fontSize;
+}
+
+function sameRgb(
+  a: [number, number, number],
+  b: [number, number, number],
+): boolean {
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 }
 
 function cloneState(s: GraphicsState): GraphicsState {
@@ -561,40 +687,6 @@ function clamp01(n: number): number {
 
 function isNumber(tok: string): boolean {
   return /^-?\d*\.?\d+$/.test(tok);
-}
-
-function emitRun(
-  runs: PdfTextRun[],
-  text: string,
-  state: GraphicsState,
-  page: number,
-  fontMap: Map<string, string>,
-) {
-  if (!text) return;
-  // Drop runs that are pure whitespace or control characters.
-  if (!/\S/.test(text)) return;
-
-  // Effective rendered size: Tf size * sqrt(|tm a*d|) * sqrt(|cm a*d|).
-  // Because Tj is rendered at (Tm * cm), the geometric mean of the y-scale
-  // and x-scale gives a stable measure of "the font as the user sees it".
-  const tmScale = Math.sqrt(Math.abs(state.tm[0] * state.tm[3])) || 1;
-  const cmScale = Math.sqrt(Math.abs(state.cm[0] * state.cm[3])) || 1;
-  const effectiveSize = state.fontSize * tmScale * cmScale;
-  const safeSize =
-    isFinite(effectiveSize) && effectiveSize > 0 ? effectiveSize : state.fontSize;
-
-  const color = rgbToHex(state.fillRgb);
-  const fontFamily = state.fontResource
-    ? fontMap.get(state.fontResource)
-    : undefined;
-
-  runs.push({
-    text: collapseWs(text),
-    fontSize: round1(safeSize),
-    color,
-    page,
-    fontFamily,
-  });
 }
 
 function collapseWs(s: string): string {
@@ -807,15 +899,79 @@ function decodeHexString(s: string): string {
 
 // ---------- Figure / alt-text extraction ----------
 
+interface RawImage {
+  /** Object ID like "5 0" */
+  id: string;
+  /** Filter name from /Filter, or "" if none. */
+  filter: string;
+  width?: number;
+  height?: number;
+  /** Inline data URI when feasible (DCTDecode/JPXDecode within size cap). */
+  dataUri?: string;
+}
+
+/**
+ * Pull every image XObject out of the PDF in document order, inlining the
+ * payload as a data URI when it's a browser-renderable format and small
+ * enough not to bloat localStorage.
+ */
+function extractImages(objects: RawObject[]): RawImage[] {
+  const out: RawImage[] = [];
+  for (const obj of objects) {
+    if (!obj.stream) continue;
+    if (!/\/Subtype\s*\/Image\b/.test(obj.dict)) continue;
+    const filter = (
+      /\/Filter\s*(\/[A-Za-z0-9]+|\[[^\]]*\])/.exec(obj.dict)?.[1] ?? ""
+    ).trim();
+    const width = parseIntOrUndef(/\/Width\s+(\d+)/.exec(obj.dict)?.[1]);
+    const height = parseIntOrUndef(/\/Height\s+(\d+)/.exec(obj.dict)?.[1]);
+
+    let dataUri: string | undefined;
+    if (filter.includes("DCTDecode") && obj.stream.length <= MAX_INLINE_IMAGE_BYTES) {
+      // /DCTDecode payloads are JPEG bytes ready to embed as-is.
+      dataUri = `data:image/jpeg;base64,${obj.stream.toString("base64")}`;
+    } else if (
+      filter.includes("JPXDecode") &&
+      obj.stream.length <= MAX_INLINE_IMAGE_BYTES
+    ) {
+      // /JPXDecode = JPEG 2000. Modern browsers don't all render this, but
+      // Safari does and most Chromium builds do via the OS codec — worth
+      // shipping rather than dropping.
+      dataUri = `data:image/jp2;base64,${obj.stream.toString("base64")}`;
+    }
+    // Other filters (FlateDecode raw pixel data, LZW, etc.) would require
+    // a PNG encoder — out of scope for this dependency-free pass.
+
+    out.push({ id: obj.id, filter, width, height, dataUri });
+  }
+  return out;
+}
+
+function parseIntOrUndef(s: string | undefined): number | undefined {
+  if (!s) return undefined;
+  const n = parseInt(s, 10);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 /**
  * Scan the structure tree for /Figure elements and check whether each
  * carries an /Alt entry. We don't fully rebuild the struct tree — we just
  * pattern-match `/S /Figure` + the surrounding dict's /Alt presence, which
  * matches what Adobe writes when exporting tagged PDFs.
+ *
+ * Each figure is paired with one extracted image XObject by document order
+ * (1st figure → 1st image, etc.). This isn't always exact — figures can
+ * group multiple images, and not every image lives under a figure tag —
+ * but for typical "one image per figure" PDFs it gives the user a real
+ * preview of which image needs alt text.
  */
 function extractFigures(objects: RawObject[]): PdfFigureMeta[] {
   const figures: PdfFigureMeta[] = [];
   const figureRe = /<<([^<>]*\/S\s*\/Figure\b[^<>]*)>>/g;
+  const pageObjs = objects.filter((o) =>
+    /\/Type\s*\/Page(?!s)\b/.test(o.dict),
+  );
+  const images = extractImages(objects);
 
   for (const obj of objects) {
     let m: RegExpExecArray | null;
@@ -827,19 +983,36 @@ function extractFigures(objects: RawObject[]): PdfFigureMeta[] {
       let page: number | undefined;
       if (pageMatch) {
         const ref = `${pageMatch[1]} ${pageMatch[2]}`;
-        const pageObjs = objects.filter((o) =>
-          /\/Type\s*\/Page(?!s)\b/.test(o.dict),
-        );
         const idx = pageObjs.findIndex((o) => o.id === ref);
         if (idx >= 0) page = idx + 1;
       }
+      const figIndex = figures.length + 1;
+      const matchedImage = images[figures.length];
       figures.push({
         page,
         hasAlt: !!alt && alt.trim().length > 0,
         alt,
-        index: figures.length + 1,
+        index: figIndex,
+        imageDataUri: matchedImage?.dataUri,
+        imageWidth: matchedImage?.width,
+        imageHeight: matchedImage?.height,
       });
     }
+  }
+
+  // If no /Figure structure elements exist but the PDF has untagged
+  // image XObjects, emit them as figures so we still surface "image
+  // without alt text" findings — an untagged image is the worst case.
+  if (figures.length === 0 && images.length > 0) {
+    images.forEach((img, i) => {
+      figures.push({
+        hasAlt: false,
+        index: i + 1,
+        imageDataUri: img.dataUri,
+        imageWidth: img.width,
+        imageHeight: img.height,
+      });
+    });
   }
 
   return figures;

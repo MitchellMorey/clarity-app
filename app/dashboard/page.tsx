@@ -8,6 +8,7 @@ import { FileIcon } from "@/components/FileIcon";
 import { ScoreBar } from "@/components/ScoreBar";
 import { currentVersionOf, useApp } from "@/lib/store";
 import type { Document, PdfReview } from "@/lib/types";
+import type { MouseEvent } from "react";
 
 type ReviewRow =
   | { kind: "doc"; uploadedAt: string; doc: Document }
@@ -81,7 +82,7 @@ export default function DashboardPage() {
             href="/upload"
             eyebrow="Word + PowerPoint"
             title="Review Document Accessibility"
-            body="Upload a DOCX or PPTX. Clarity walks every paragraph or slide and flags contrast, font size, alt text, and heading issues you can fix in the source file."
+            body="Upload a DOCX or PPTX. Clarity reviews each document and flags contrast, font size, alt text, and heading issues you can fix in the source file."
             cta="Start a document review"
           />
           <CtaCard
@@ -215,6 +216,7 @@ function DocReviewRow({ doc }: { doc: Document }) {
 }
 
 function PdfReviewRow({ review }: { review: PdfReview }) {
+  const { deletePdfReview, pushToast } = useApp();
   const open = review.findings.filter(
     (f) => !f.resolved && (f.status === "failed" || f.status === "needs-check"),
   ).length;
@@ -222,10 +224,27 @@ function PdfReviewRow({ review }: { review: PdfReview }) {
     (f) => f.status === "failed" && !f.resolved,
   ).length;
   const resolved = review.findings.filter((f) => f.resolved).length;
+
+  const handleDelete = (e: MouseEvent<HTMLButtonElement>) => {
+    // The whole row is wrapped in a Link, so we have to prevent the click
+    // from bubbling up and navigating before the user confirms deletion.
+    e.preventDefault();
+    e.stopPropagation();
+    if (
+      typeof window !== "undefined" &&
+      window.confirm(
+        "Delete this PDF review? The suggestions will be gone.",
+      )
+    ) {
+      deletePdfReview(review.id);
+      pushToast("PDF review deleted");
+    }
+  };
+
   return (
     <Link
       href={`/pdf-reports/${review.id}`}
-      className="grid grid-cols-[40px_1.8fr_1fr_1fr_140px] items-center gap-4 rounded-card border border-border bg-surface px-5 py-4 transition hover:border-border-strong hover:shadow-soft-sm"
+      className="grid grid-cols-[40px_1.8fr_1fr_1fr_220px] items-center gap-4 rounded-card border border-border bg-surface px-5 py-4 transition hover:border-border-strong hover:shadow-soft-sm"
     >
       <div className="grid h-10 w-10 place-items-center rounded-lg2 bg-accent-soft text-[13px] font-semibold text-accent">
         PDF
@@ -253,8 +272,15 @@ function PdfReviewRow({ review }: { review: PdfReview }) {
         <ScoreBar score={review.score} />
         <span>{review.score}</span>
       </div>
-      <div className="flex justify-end">
-        <span className="btn btn-secondary btn-sm">View report</span>
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm text-error"
+          onClick={handleDelete}
+        >
+          Delete review
+        </button>
+        <span className="btn btn-secondary btn-sm">Review report</span>
       </div>
     </Link>
   );

@@ -196,14 +196,13 @@ function buildClarityFindings(
 
   // Font size — Adobe never checks this, so always emit if we found any.
   if (checks.fontEvidence.length > 0) {
+    const n = checks.fontEvidence.length;
     out.push({
       id: "find_" + Math.random().toString(36).slice(2, 9),
       category: "Page content",
       rule: "Text font size",
       status: checks.fontHasCritical ? "failed" : "needs-check",
-      description: `Clarity found ${checks.fontEvidence.length} text block${
-        checks.fontEvidence.length === 1 ? "" : "s"
-      } below the 12pt readable threshold.`,
+      description: `${n} text block${n === 1 ? " is" : "s are"} below the 12pt readable threshold.`,
       suggestion:
         "Increase the font size in the source file to at least 12pt for body text (9pt is the floor for any printed text). Adobe's accessibility checker doesn't measure font size, but unreadable text is one of the most common real-world accessibility problems.",
       resolved: false,
@@ -219,14 +218,13 @@ function buildClarityFindings(
     checks.contrastEvidence.length > 0 &&
     !adobeRuleKeys.has("colorcontrast")
   ) {
+    const n = checks.contrastEvidence.length;
     out.push({
       id: "find_" + Math.random().toString(36).slice(2, 9),
       category: "Document",
       rule: "Color contrast",
       status: "failed",
-      description: `Clarity found ${checks.contrastEvidence.length} text element${
-        checks.contrastEvidence.length === 1 ? "" : "s"
-      } below the WCAG 2.1 contrast threshold.`,
+      description: `${n} text element${n === 1 ? " is" : "s are"} below the WCAG 2.1 contrast threshold.`,
       suggestion:
         "Darken low-contrast text in the source file so it meets the 4.5:1 minimum (3:1 for 18pt+ bold). Re-export the PDF after fixing.",
       resolved: false,
@@ -240,14 +238,13 @@ function buildClarityFindings(
     checks.hasMissingAlt &&
     !adobeRuleKeys.has("figuresalternatetext")
   ) {
+    const n = checks.altEvidence.length;
     out.push({
       id: "find_" + Math.random().toString(36).slice(2, 9),
       category: "Alternate text",
       rule: "Figures alternate text",
       status: "failed",
-      description: `Clarity found ${checks.altEvidence.length} figure${
-        checks.altEvidence.length === 1 ? "" : "s"
-      } in the PDF without alt text.`,
+      description: `${n} figure${n === 1 ? "" : "s"} in the PDF ${n === 1 ? "is" : "are"} missing alt text.`,
       suggestion:
         "For every figure or image in your source, add alt text that describes the image's purpose (not its filename). Right-click → Edit Alt Text in Word/PowerPoint; Object Export Options in InDesign.",
       resolved: false,
