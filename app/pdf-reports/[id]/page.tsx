@@ -13,7 +13,10 @@ import type {
   PdfRuleStatus,
 } from "@/lib/types";
 
-type Filter = "all" | "failed" | "needs-check" | "passed" | "resolved";
+// "needs-review" is a combined view over Adobe-failed rules and rules
+// Adobe flagged for manual checking — both surface findings the user has
+// to act on, so showing them in one tab keeps the list scannable.
+type Filter = "all" | "needs-review" | "passed" | "resolved";
 
 export default function PdfReportPage({
   params,
@@ -28,7 +31,7 @@ export default function PdfReportPage({
     togglePdfFindingResolved,
   } = useApp();
 
-  const [filter, setFilter] = useState<Filter>("failed");
+  const [filter, setFilter] = useState<Filter>("needs-review");
 
   useEffect(() => {
     if (hydrated && !isAuthed) router.replace("/");
@@ -60,11 +63,20 @@ export default function PdfReportPage({
       .filter((f) => {
         if (filter === "all") return true;
         if (filter === "resolved") return f.resolved;
+        if (filter === "needs-review") {
+          // Combined "Failed" + "Manual check" — both demand user action.
+          return (
+            !f.resolved &&
+            (f.status === "failed" || f.status === "needs-check")
+          );
+        }
         return !f.resolved && f.status === filter;
       })
       .slice()
       .sort((a, b) => {
-        // Within a filter, sort by status severity then resolved at the bottom.
+        // Within a filter, sort by status severity then resolved at the
+        // bottom. The status-weight ordering keeps "failed" rules above
+        // "needs-check" rules within the combined Needs review view.
         if (a.resolved !== b.resolved) return a.resolved ? 1 : -1;
         return statusWeight(a.status) - statusWeight(b.status);
       });
@@ -102,9 +114,9 @@ export default function PdfReportPage({
     );
   }
 
+  const needsReviewCount = counts.failed + counts["needs-check"];
   const filters: { key: Filter; label: string }[] = [
-    { key: "failed", label: `Failed (${counts.failed})` },
-    { key: "needs-check", label: `Manual check (${counts["needs-check"]})` },
+    { key: "needs-review", label: `Needs review (${needsReviewCount})` },
     { key: "passed", label: `Passed (${counts.passed})` },
     { key: "resolved", label: `Resolved (${counts.resolved})` },
     { key: "all", label: `All (${counts.all})` },
