@@ -341,6 +341,14 @@ interface GraphicsState {
   cm: [number, number, number, number, number, number];
   /** Current fill color in 0..1 components. */
   fillRgb: [number, number, number];
+  /**
+   * Cumulative y-offset of the current text-line baseline, in TLM units.
+   * Reset to 0 on BT and on every Tm. Updated by Td/TD by their `ty`
+   * operand. Used to decide whether a positioning op is a same-line
+   * shuffle (kerning / justified spacing) or a real line break — only
+   * line breaks should split previews into separate blocks.
+   */
+  tlmY: number;
 }
 
 const IDENTITY: [number, number, number, number, number, number] = [
@@ -354,6 +362,7 @@ function newState(): GraphicsState {
     tm: [...IDENTITY] as GraphicsState["tm"],
     cm: [...IDENTITY] as GraphicsState["cm"],
     fillRgb: [0, 0, 0],
+    tlmY: 0,
   };
 }
 
@@ -375,16 +384,21 @@ function multiplyMatrix(
  * A "logical text block" we accumulate while walking the content stream.
  *
  * We emit one PdfTextRun per block. Continuous Tj/TJ calls within the same
- * line and same formatting are merged (kerning is often expressed by
- * splitting a single visual word across multiple Tj operators, so merging
- * is what users would expect to see). We flush + start a new block on:
- *   - any positioning operator that moves to a new line (Td, TD, T-star,
- *     Tm, single-quote, double-quote)
+ * visual *line* and same formatting are merged into a single block — even
+ * across horizontal-only positioning ops like a `Td <dx> 0`, which PDFs
+ * routinely emit between every word for kerning / justified spacing.
+ *
+ * We flush + start a new block on:
+ *   - any positioning operator that actually moves to a new line — i.e.
+ *     `Td`/`TD` with a non-zero `ty`, `T*`, `'`, `"`, or a `Tm` whose
+ *     translation `f` differs from the current line baseline
  *   - any formatting change (Tf, rg, g, k, sc, scn)
  *   - BT/ET boundaries and graphics state save/restore (q/Q)
  *
  * That way two adjacent paragraphs that share size/color produce two
- * separate evidence rows instead of being joined into one merged preview.
+ * separate evidence rows instead of being joined into one merged preview,
+ * while a single line whose words are individually `Td`-shuffled stays
+ * a single preview.
  */
 interface PendingBlock {
   text: string;
@@ -432,6 +446,16 @@ function walkContentStream(
 
   let inText = false;
   const operands: string[] = [];
+
+  // When we merge across a horizontal-only Td (kerning / justified spacing),
+  // we need a separator between the previous and next text chunks so words
+  // don't run together. Idempotent — only adds a space when there's a
+  // pending block whose tail isn't already whitespace.
+  const ensureTrailingSpace = () => {
+    if (pending && pending.text && !/\s$/.test(pending.text)) {
+      pending.text += " ";
+    }
+  };
 
   const appendText = (raw: string) => {
     if (!raw) return;
@@ -495,6 +519,7 @@ function walkContentStream(
         flush();
         inText = true;
         state.tm = [...IDENTITY] as GraphicsState["tm"];
+        state.tlmY = 0;
         break;
       case "ET":
         flush();
@@ -522,16 +547,41 @@ function walkContentStream(
       }
       case "Tm": {
         if (operands.length >= 6) {
-          // New text matrix → effectively a new line / position.
-          flush();
-          state.tm = popMatrix(operands);
+          const m = popMatrix(operands);
+          // Only flush when the new matrix moves to a different baseline.
+          // PDFs emit Tm at the start of a paragraph and reuse the same
+          // matrix for runs on that line, so comparing the y translation
+          // to the current line baseline is enough to distinguish a real
+          // line break from a no-op formatting refresh.
+          if (m[5] !== state.tlmY) flush();
+          state.tm = m;
+          state.tlmY = m[5];
         }
         break;
       }
       case "Td":
-      case "TD":
+      case "TD": {
+        // Td tx ty / TD tx ty: translate the text-line matrix by (tx, ty).
+        // ty != 0 → real line break, flush. ty == 0 → horizontal-only
+        // shuffle (kerning / justified spacing); keep the current block
+        // open and just make sure the next text is separated from the
+        // previous chunk by a space so words don't run together.
+        if (operands.length >= 2) {
+          const ty = parseFloat(operands[operands.length - 1]);
+          if (Number.isFinite(ty) && ty !== 0) {
+            flush();
+            state.tlmY += ty;
+          } else {
+            ensureTrailingSpace();
+          }
+        } else {
+          // Malformed — be conservative.
+          flush();
+        }
+        break;
+      }
       case "T*":
-        // Move to a new line — flush so the next text becomes a new block.
+        // Move to start of next line (using leading) — always a line break.
         flush();
         break;
       case "rg": {
@@ -661,6 +711,7 @@ function cloneState(s: GraphicsState): GraphicsState {
     tm: [...s.tm] as GraphicsState["tm"],
     cm: [...s.cm] as GraphicsState["cm"],
     fillRgb: [...s.fillRgb] as GraphicsState["fillRgb"],
+    tlmY: s.tlmY,
   };
 }
 
