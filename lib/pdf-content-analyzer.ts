@@ -965,12 +965,27 @@ interface RawImage {
  * Pull every image XObject out of the PDF in document order, inlining the
  * payload as a data URI when it's a browser-renderable format and small
  * enough not to bloat localStorage.
+ *
+ * We exclude auxiliary images that aren't user-visible figures:
+ *   - Soft masks (`/SMask N M R`): hold an alpha channel for a parent image.
+ *     They share the parent's dimensions and are typically stored as
+ *     FlateDecode raw pixel data — exactly the "phantom" 640×480 with no
+ *     preview that users were seeing alongside their real figure.
+ *   - Hard masks (`/Mask N M R`): same rationale; they're a transparency
+ *     mask, not an independently visible image.
+ *   - Page thumbnails (`/Thumb N M R`): viewer-side previews, not content.
+ *   - 1-bit stencils (`/ImageMask true`): drawn as a fill-color stencil,
+ *     not a standalone figure that needs alt text.
  */
 function extractImages(objects: RawObject[]): RawImage[] {
   const out: RawImage[] = [];
+  const auxiliary = collectAuxiliaryImageRefs(objects);
+
   for (const obj of objects) {
     if (!obj.stream) continue;
     if (!/\/Subtype\s*\/Image\b/.test(obj.dict)) continue;
+    if (auxiliary.has(obj.id)) continue;
+    if (/\/ImageMask\s+true\b/.test(obj.dict)) continue;
     const filter = (
       /\/Filter\s*(\/[A-Za-z0-9]+|\[[^\]]*\])/.exec(obj.dict)?.[1] ?? ""
     ).trim();
@@ -1002,6 +1017,27 @@ function parseIntOrUndef(s: string | undefined): number | undefined {
   if (!s) return undefined;
   const n = parseInt(s, 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * Walk every object dict and gather the IDs of image XObjects that are
+ * referenced as auxiliary data (soft masks, hard masks, page thumbnails)
+ * rather than as standalone visible images. Those references look like
+ * `/SMask 5 0 R`, `/Mask 6 0 R`, `/Thumb 7 0 R`. Used by extractImages to
+ * skip alpha channels and viewer thumbnails, which would otherwise show up
+ * as phantom "Figure N has no alt text" rows.
+ */
+function collectAuxiliaryImageRefs(objects: RawObject[]): Set<string> {
+  const refs = new Set<string>();
+  const re = /\/(?:SMask|Mask|Thumb)\s+(\d+)\s+(\d+)\s+R/g;
+  for (const obj of objects) {
+    let m: RegExpExecArray | null;
+    re.lastIndex = 0;
+    while ((m = re.exec(obj.dict)) !== null) {
+      refs.add(`${m[1]} ${m[2]}`);
+    }
+  }
+  return refs;
 }
 
 /**
